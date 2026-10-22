@@ -222,6 +222,7 @@ export function InputSettingsPage() {
           <InputSchemeSettingsContent
             preferences={draft}
             hasTouchKeyboardSchemes={Boolean(client.touchKeyboardSchemes)}
+            koreanRomaja={host?.korean_romaja === true}
             touchKeyboardSchemes={touchKeyboardSchemes}
             selectedTouchKeyboardScheme={selectedTouchKeyboardScheme}
             macos={macosPlatform}
