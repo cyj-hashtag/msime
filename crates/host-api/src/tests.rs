@@ -12949,7 +12949,6 @@ fn stale_dictionary_generation_is_prepared_and_other_keys_survive() {
         "dictionaries": "/home/u/.config/msime-client/user/dictionaries/old",
         "preferences_directory": "/home/u/.config/msime-client",
         "online_provider_socket": "/run/user/1000/msime-online.sock",
-        "korean_romaja": true,
     });
     let mut requested = None;
     let refreshed = super::refreshed_host_options(
@@ -12978,6 +12977,32 @@ fn stale_dictionary_generation_is_prepared_and_other_keys_survive() {
     let mut expected = document.clone();
     expected["dictionaries"] = json!("/home/u/.config/msime-client/user/dictionaries/new");
     assert_eq!(refreshed, expected);
+}
+
+#[test]
+fn korean_romaja_capability_survives_resource_option_refresh() {
+    let document = json!({
+        "api_version": 1, "resources": "old-resources", "user_data": "user",
+        "cache": "cache", "dictionaries": "old-dictionaries", "korean_romaja": true,
+        "preferences": Preferences {
+            scheme: InputScheme::Korean,
+            korean: KoreanPreferences { layout: KoreanLayout::Romaja },
+            ..chinese_preferences()
+        },
+    });
+    let refreshed = refreshed_layout(
+        &document,
+        json!({
+            "resources": "new-resources", "dictionaries": "new-dictionaries",
+        }),
+    )
+    .unwrap();
+    assert_eq!(refreshed["korean_romaja"], true);
+    assert_eq!(refreshed["preferences"], document["preferences"]);
+    let options = serde_json::from_value::<HostOptions>(refreshed)
+        .unwrap()
+        .into_engine_options();
+    assert_eq!(options.korean_layout, 1);
 }
 
 #[test]

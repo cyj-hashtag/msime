@@ -6392,7 +6392,7 @@ fn korean_romaja_keeps_hanja_ascii_punctuation_and_unmapped_letters() {
             Some(format!("{expected},").as_str())
         );
     }
-    for letter in [b'q', b'v', b'z', b'Q', b'V', b'Z'] {
+    for letter in *b"qvzQVZ" {
         type_korean(&mut session, "han");
         let result = session.character(letter, letter.is_ascii_uppercase());
         assert!(result.handled);
