@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { runAsyncAction } from "../core/async-action";
 import { randomRequestId } from "../core/random-id";
 import { utf8ByteLength } from "../core/text";
+import { useDebouncedCallback } from "../core/use-debounced-callback";
 import {
   DICTIONARY_PAGE_SIZE,
   MAX_DICTIONARY_FILE_BYTES,
@@ -30,6 +31,7 @@ import {
   personalDictionaryExportName,
   personalDictionaryExportPayload,
   loadAllPersonalDictionaryEntries,
+  loadDictionaryExportText,
   dictionaryKindLabel,
 } from "../dictionary/dictionary-export";
 import {
@@ -213,22 +215,25 @@ export function useDictionaryManager({ client, confirm }: UseDictionaryManagerOp
     }
   }
 
+  const { schedule: loadPhrasesLater, cancel: cancelPhraseQuery } = useDebouncedCallback(
+    (kind: LocalDictionaryKind) => void loadPhrases(kind, 0, { preserveError: true }),
+    280,
+  );
+
   // 进入设置时先列出当前类型的全部词条；输入查询条件后用短暂防抖实时筛选。
   useEffect(() => {
     if (!client.dictionary) return;
     // 查询条件变化时清理旧提示，延迟执行的查询不能擦掉期间完成的操作结果。
     clearPhraseFeedback();
-    const timer = window.setTimeout(() => {
-      void loadPhrases(dictionaryKind, 0, { preserveError: true });
-    }, 280);
+    loadPhrasesLater(dictionaryKind);
     return () => {
-      window.clearTimeout(timer);
+      cancelPhraseQuery();
       // 查询条件已经变化时，旧响应在下一次防抖请求发出前也不能覆盖列表。
       phraseRequestGeneration.current += 1;
     };
     // 初次挂载、宿主替换、类型切换或输入变化都走同一条防抖查询路径。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client.dictionary, dictionaryKind, phraseSearch]);
+  }, [client.dictionary, dictionaryKind, phraseSearch, loadPhrasesLater, cancelPhraseQuery]);
 
   function turnPhrasePage(offset: number) {
     if (phraseListRef.current) phraseListRef.current.scrollTop = 0;
@@ -471,23 +476,12 @@ export function useDictionaryManager({ client, confirm }: UseDictionaryManagerOp
       async (isCurrent) => {
         let text = "";
         if (dictionary.export) {
-          let offset = 0;
-          let hasMore = true;
-          while (hasMore && offset <= 1000000) {
-            const page = await dictionary.export(
-              dictionaryKind,
-              dictionaryFormat === "rime" ? "standard" : dictionaryFormat,
-              offset,
-              1000,
-            );
-            text += page.text;
-            if (utf8ByteLength(text) > MAX_DICTIONARY_EXPORT_BYTES) {
-              throw new Error("dictionary_export_limit");
-            }
-            const count = page.text ? page.text.trimEnd().split("\n").length : 0;
-            offset += count;
-            hasMore = page.has_more && count > 0;
-          }
+          text = await loadDictionaryExportText(
+            dictionary,
+            dictionaryKind,
+            dictionaryFormat === "rime" ? "standard" : dictionaryFormat,
+            MAX_DICTIONARY_EXPORT_BYTES,
+          );
         } else {
           text = phrases
             .map((entry) =>

@@ -228,9 +228,7 @@ char *msime_client_cloud_dictionary(const uint8_t *request, size_t length);
  * installers ship (<kind>/<id>/ folders: the uuid script plugin, the latex-symbols phrase
  * table); absent means plugin-packs beside the built-in sound packs, and nothing when that
  * directory is not there (mobile, development builds without them).
- * 可选 helpcode_fallback_resources 是随包资源的绝对根目录。仅主资源缺少内置辅助码表时
- * 才从这里读取 helpcodes/；已有表、自定义表和插件表继续优先。宿主可仅在内存配置中
- * 注入此键，避免旧版宿主读取不认识的持久化键。
+ * 可选 helpcode_fallback_resources 是随包资源的绝对根目录。仅主资源缺少内置辅助码表时才从这里读取 helpcodes/；已有表、自定义表和插件表继续优先。resources 换成下载的词库代次时，msime_client_prepare_host 自己写这个键；文档没有它时，建会话会从词库更新记录里找随包目录，宿主一般不必设置。宿主自己注入时可仅放在内存配置中，避免旧版宿主读取不认识的持久化键。
  * Do not delete .msime-dictionary-access.lock files. Legacy/external writers do
  * not participate; preparation/upgrades still require stopped sessions.
  */
@@ -374,6 +372,8 @@ char *msime_client_touch_quick_symbols(const uint8_t *value, size_t length);
  * Creates the directory/lock file if absent, never overwrites preference contents.
  */
 char *msime_client_load_preferences(const uint8_t *directory, size_t length);
+/* 三个可重绑切换热键（keybindings.toggle_english_candidates、toggle_full_width、toggle_punctuation）按共享 KeyChord 契约解码。请求是 JSON {"keybindings": object}（<=65536 字节）；keybindings 缺省或为 null 时按出厂值，不是 object 时返回错误。value 是 {"english_candidates","full_width","punctuation"}，每项是 null（写法为空或不合法：不绑定）或 {"key": 主键规范名, "ctrl": bool, "alt": bool, "shift": bool, "meta": bool}；规范名是 client-core KeyChord 的 Display 输出（KeyA-KeyZ、Digit0-Digit9、F1-F12、Space、Semicolon、Equal、Comma、Minus、Period、Slash、Backquote、BracketLeft、Backslash、BracketRight、Quote），宿主按规范名认键，写法的解析只在 Rust 一侧。结果用 msime_client_string_free 释放。 */
+char *msime_client_toggle_hotkey_chords(const uint8_t *request, size_t length);
 /* 私有的聚合打字统计。JSON 请求（<=65536 字节）：
  * {directory:绝对路径,action:{operation:"load"|"reset"}}
  * {directory,action:{operation:"set_enabled",enabled:bool}}
@@ -556,6 +556,12 @@ void msime_client_release_process_cache(void);
  * 数组顺序即设置页顺序；不含平台特有的 system/local，宿主按能力追加。
  * models 仅作建议，不限制用户自定义模型。宿主复制字段后用 msime_client_string_free 释放返回的 JSON 缓冲区。 */
 char *msime_client_voice_provider_catalog(void);
+/* 设置页识别服务行的状态文案。provider 为 system、local、云端服务 id 或空串；resolved
+ * 表示共享解析已得到可用云端配置，platform_available 是宿主是否有系统识别服务，后两个
+ * 参数只在 provider 为 local 时使用。纯计算，返回 {status:string|null}。 */
+char *msime_client_mobile_voice_status(const uint8_t *provider, size_t provider_length,
+                                       bool resolved, bool platform_available,
+                                       bool model_ready, bool runtime_ready);
 /* 切换语音服务的纯函数；请求 <=1 MiB：{service:"voice.asr"|"voice.polish",provider:string,
  * current:{provider?,endpoint?,model?,token?,tokens?:{id:string}},field_policy?:"fill_defaults"|"clear"}。
  * current 缺少的字段按空值处理。field_policy 缺省为 fill_defaults，只替换空白或出厂值；clear 在换服务时清空地址和模型。
@@ -613,7 +619,7 @@ char *msime_client_voice_local_model_cancel(const uint8_t *request, size_t lengt
 char *msime_client_voice_local_model_remove(const uint8_t *request, size_t length);
 char *msime_client_voice_model_setting_check(const uint8_t *request, size_t length);
 /* 按需资源包存放在 <state_root>/resource-packs/<id>/；state_root 是 HostOptions 的 preferences_directory（Android: files/bootstrap/state），会话下次取得焦点时读取新发布的包。
- * 包 id：japanese、language-dictionaries、handwriting、settled-model、offline-glosses、voice-runtime、wubi、voice-runtime-macos（锁文件固定了重签的 macOS 运行库之后才有）。请求为 length 字节的 JSON（<=16384），响应使用标准封装。install 和 adopt 是阻塞调用，只能放在工作线程。
+ * 包 ID：`japanese`、`language-dictionaries`、`handwriting`、`settled-model`、`grammar-model-wanxiang`、`grammar-model-baguwen`、`grammar-model-baguwen-compact`、`offline-glosses`、`voice-runtime`、`wubi`、`voice-runtime-macos`（锁文件固定了重签的 macOS 运行库之后才有）。请求为 `length` 字节的 JSON（<=16384），响应使用标准封装。`install` 和 `adopt` 是阻塞调用，只能放在工作线程。
  * 错误为 "invalid resource pack request"、"invalid state root"、"invalid source"、"resource_pack_unknown"、"resource_pack_busy"（本进程正在安装或收编该包）或 "local_model_*"。
  * resource_packs: {state_root} -> [{id, state:"missing"|"installed"|"outdated", size, schemes:[...], import_files:[{name,url,size}]}]，每包一项；size 为下载字节数，import_files 为离线安装所需文件（voice-runtime 使用归档），url 为上游下载地址。
  * resource_pack_install: {state_root, pack, sources?:["https://mirror/", ...], files?:[absolute path]} -> {path}。
@@ -622,6 +628,7 @@ char *msime_client_voice_model_setting_check(const uint8_t *request, size_t leng
  * progress 可为空，在调用线程收到 (context, phase "download"|"import"|"verify"|"done", done, total)，阶段字符串仅在回调期间有效。
  * 首次进度在任务登记后、任何文件或网络 I/O 前发送（done=0，total=资源包大小），回调可重入 resource_pack_cancel；取消后返回 "local_model_cancelled"。
  * resource_pack_cancel: pack 是原始 UTF-8 id（不是 JSON）；NULL/0 取消本进程全部资源包安装。可在任何线程调用，立即返回，不触发进度回调。
+ * resource_pack_remove: {state_root, pack} -> {removed: bool}。阻塞卸载已发布的资源包，先摘除引擎侧共享映射缓存；未安装、未发布目录和符号链接返回 false，活跃会话仍持有映射导致的删除失败如实返回错误。只能放在工作线程。
  * resource_pack_adopt: {state_root, pack, source: absolute dir} -> {path}。在同一文件系统内把包文件从 source 重命名移入（不复制），按编译锁校验后发布；失败则全部移回，不发布任何内容。已有相同字节的安装时直接返回，不改动 source。 */
 typedef void (*msime_client_resource_pack_progress_callback)(void *context, const char *phase,
                                                              uint64_t done, uint64_t total);
@@ -630,6 +637,7 @@ char *msime_client_resource_pack_install(const uint8_t *request, size_t length,
                                          msime_client_resource_pack_progress_callback progress,
                                          void *context);
 void msime_client_resource_pack_cancel(const uint8_t *pack, size_t length);
+char *msime_client_resource_pack_remove(const uint8_t *request, size_t length);
 char *msime_client_resource_pack_adopt(const uint8_t *request, size_t length);
 /* 自定义翻译请求描述器（不做网络 I/O）：api.deepl.com / api-free.deepl.com 用 DeepL v2 格式（DeepL-Auth-Key 鉴权、text 数组，没有密钥时报错），其他地址用 DeepLX 兼容格式。Request <=16 KiB:
  * {config:{enabled,endpoint,api_key},text,source_language,target_language}.
@@ -687,8 +695,9 @@ char *msime_client_ai_endpoint_check(const uint8_t *endpoint, size_t length);
 char *msime_client_ai_models(const uint8_t *request, size_t length);
 /* AI 公开预设数组；含 id/title/endpoint/model/models/documentation/desktop_only/uses_token，不做 I/O。 */
 char *msime_client_ai_provider_catalog(void);
-/* 纯计算切换补丁。请求 <=16 KiB：{provider,current:{enabled,provider,endpoint,model}}。
- * 返回 {enabled,provider,endpoint,model}；不传凭据，错误码 ai_invalid。不保留请求缓冲区。 */
+/* 纯计算切换补丁。请求 <=16 KiB：`{provider,current:{enabled,provider,endpoint,model,endpoints?,models?}}`。
+ * `endpoints`/`models` 是按服务商 `id` 记忆自定义地址/模型的字符串映射，缺省为空映射；切换前保存当前自定义值，再按目标槽位回填，缺键或空字符串使用目录默认值。
+ * 返回 `{enabled,provider,endpoint,model,endpoints,models}`；宿主须将两个映射随补丁保存。不传凭据，错误码 `ai_invalid`。不保留请求缓冲区。 */
 char *msime_client_ai_provider_update(const uint8_t *request, size_t length);
 /* The AI settings page's 「测试」, the Tauri settings shell's ai_test. Request <=256 KiB:
  * {endpoint,model,prompt,token,text}: model non-empty <=256 bytes; prompt (may be empty) and
@@ -1195,7 +1204,13 @@ char *msime_client_music_pack(const uint8_t *request, size_t length);
  * "reorder_scripts" {ids:[id]}：ids 按给出的顺序排到最前，其余按原来的相对顺序；有重复或没有授权条目的 id 时整个拒绝。
  * 失败时为 {ok:false, error: 失败码, detail?}：失败码与桌面外壳相同（invalid、storage、plugin_invalid、plugin_unsupported_source、plugin_archive、plugin_reserved、plugin_storage、plugin_script_missing、plugin_script_changed、plugin_script_grant_invalid、plugin_script_limit、plugin_script_memory、plugin_script_grants_format、mention_invalid、mention_format、mention_storage），detail 存在时是被拒的包或条目违反的规则，中文，给设置页显示。会读写文件，导入最多复制一个音乐包大小的数据：宿主有工作线程时在工作线程上调用。 */
 char *msime_client_plugins(const uint8_t *request, size_t length);
-/* 不带编码的常用语（<=4 MiB）：{directory: 偏好目录的绝对路径, action:{operation:"load"|"add"{text}|"remove"{id}|"replace"{id,text}|"move"{id,index}|"install_pack"{resource}|"remove_pack"{id}}}。Value 是整份文档 {phrases:[{id,text,pack}],packs:[{id,name,revision}],skipped?}；错误是固定的代码（common_phrases_io、_corrupt、_invalid、_duplicate、_limit、_too_large、_not_found）。设置进程和键盘进程都会调用，调用时锁住文件。在工作线程上调用。 */
+/* 不带编码的常用语（<=4 MiB）：{directory: 偏好目录的绝对路径, action:{operation, ...}}。
+ * 正文操作：load、add{text,note?}、remove{id}、replace{id,text,note?}、move{id,index}、install_pack{resource}、remove_pack{id}。
+ * 本机分类：add_category{name}、rename_category{id,name}、remove_category{id}、categorize{id,category:UUID|null}、set_expanded_category{category:UUID|"all"|""}。
+ * 备份分类合并：import_categories{categories:[{id,name,texts:[正文]}],expanded_category:备份分类UUID|"all"|"",phrase_ids:[本次新增UUID]}，原子合并，保留已有正文归属。
+ * Value 为 {phrases:[{id,text,pack,note?,category?}],packs:[{id,name,revision}],categories?:[{id,name}],expanded_category?:UUID|"",skipped?}；省略 expanded_category 表示 "all"。
+ * 错误码：common_phrases_io、_corrupt、_invalid、_note_invalid、_duplicate、_limit、_too_large、_not_found、_category_invalid、_category_duplicate、_category_limit。
+ * 设置进程和键盘进程都会调用，调用时锁住文件。在工作线程上调用。 */
 char *msime_client_common_phrases(const uint8_t *request, size_t length);
 /* 具名词库集合（<=17 MiB）：{options: 带 preferences_directory 的 HostOptions, action:{operation:"load"|"create"|"rename"|"delete"|"set_enabled"|"add_words"|"remove_words"|"import"|"install_community"|"queue_words"{entries}|"flush"|"synchronize"|"third_party_matches"{entries}, ...}}，格式见 client-services 的 dictionary::collections；import 的 format 为 "scel"（搜狗细胞词库）时文件按 base64 放在 bytes_base64（不超过 8 MiB），不带 text，结构损坏时是 import_malformed；queue_words 把不属于任何集合的词（本地备份恢复的个人词库，每次最多 20000 个）排进待发送队列，value 带 queued；third_party_matches 只读地核对最多 128 个准备发布到社区的词，value 的 third_party_matches 是其中出现在搜狗细胞词库导入的集合里的下标。词条经个人词库队列传过去，键盘在下一次会话时应用。synchronize 在 budget_millis（1–2000，默认 2000）毫秒软预算内逐批应用个人队列并补充待发项，每批至多 128 项并释放维护租约，返回 {synchronized,pending_count,failed_count,snapshot_error,sent}，pending_count 包括未发送的集合条目；普通操作的 Value 是集合视图；错误是固定的代码（collections_*、builtin_locked、unsupported_format、import_*、personal_dictionary_*）。在工作线程上调用。 */
 char *msime_client_dictionary_collections(const uint8_t *request, size_t length);
