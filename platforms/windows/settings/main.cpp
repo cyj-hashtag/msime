@@ -13243,7 +13243,7 @@ private:
               L"罗马音：直接输入罗马音，提供平假名、片假名及日语词库候选", nullptr);
     if (scheme == L"korean")
       segment_row(group, 0xE8AB, L"韩语布局",
-                  L"两套式按 두벌식 键位；罗马字用 x 输入声母 ㅇ（xa → 아，hangug → 한국），Shift+G/D/B/J/S 输入紧音，退格删除一个未上屏的拉丁按键，标点为半角",
+                  L"默认两套式，可切换为罗马字。罗马字用 x 输入声母 ㅇ（xa → 아，hangug → 한국），Shift+G/D/B/J/S 输入紧音；退格删除当前拼写的最后一个拉丁字母，标点为半角",
                   L"korean.layout", {{L"dubeolsik", L"两套式"}, {L"romaja", L"罗马字"}}, L"dubeolsik");
     if (scheme == L"cantonese")
       add_row(group, 0xE8AB, L"粤拼方案",

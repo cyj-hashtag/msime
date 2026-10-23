@@ -8,4 +8,4 @@ export function resolveKoreanLayout(preferences?: KoreanPreferences) {
 }
 
 export const koreanLayoutDescription =
-  "两套式按 두벌식 键位；罗马字用 x 输入声母 ㅇ（xa → 아，hangug → 한국），Shift+G/D/B/J/S 输入紧音，退格删除一个未上屏的拉丁按键，标点为半角";
+  "默认两套式，可切换为罗马字。罗马字用 x 输入声母 ㅇ（xa → 아，hangug → 한국），Shift+G/D/B/J/S 输入紧音；退格删除当前拼写的最后一个拉丁字母，标点为半角";
