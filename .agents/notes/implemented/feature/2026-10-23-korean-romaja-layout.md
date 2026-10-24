@@ -40,13 +40,17 @@ Windows GNU 工具链上，引擎韩语 54 项、偏好 2 项、宿主边界 6 �
 
 首轮 CI 发现两处原有测试仍使用新增能力前的预期：共享界面的韩语选项列表，以及 macOS 会话选项的字段数。已同步为两种布局和三项宿主能力，并补充 `korean_romaja` 强制开启、原配置不被修改的断言。相关共享设置测试三个文件共 23 项在本机通过；macOS 原生测试交由 CI 复验，编译与单测不能代替 InputMethodKit 实际输入验收。
 
-随后配置本机 MSVC 2022、Windows SDK 10.0.26100 和固定版本 vcpkg，完整编译 x64 宿主 DLL、Server、TSF 与 WinUI 设置应用；`windows-korean-keys` 的新增罗马字和原有两套式回归通过。实际启动 WinUI，检查默认两套式及已保存罗马字配置的选中状态和说明显示。额外的既有 `windows-korean-hanja-presentation` 在第 107 行超长释义断言失败：4090 字节加两空格及 `/ə/` 恰为 4096 字节，未超过显示函数的上限；相关测试与显示函数均未修改。
+随后配置本机 MSVC 2022、Windows SDK 10.0.26100 和固定版本 vcpkg，完整编译 x64 宿主 DLL、Server、TSF 与 WinUI 设置应用；`windows-korean-keys` 的新增罗马字和原有两套式回归通过。既有 `windows-korean-hanja-presentation` 的超长释义样例实际恰为 4096 字节；审查后改为分别检查 4096 字节保留读音、4097 字节省略读音，两项均通过，没有修改生产显示上限。
 
 本机 Docker 的 Debian 12 隔离桌面中，IBus 1.5.27、Fcitx5 5.0.21 原生宿主和真实 GTK3/X11 编辑框通过四次会话验收：未配置布局时两套式正常，可选罗马字的预编辑、最终文字、退格、布局外字母、紧音、标点、汉字候选、Escape 与失焦写回均正常。Fcitx5 按框架的每上下文规则显式激活新输入框的水杉。保留编辑框及候选界面截图；临时复现脚本与日志位于任务审核材料，不进入源码树。
 
-Windows TSF 在系统应用中的实际键入及 WinUI 点击保存仍未验收，界面自动化工具初始化失败；截图仅证明已保存配置的显示。macOS 没有可用 Mac，未运行 InputMethodKit。Linux 结果限于 GTK3/X11，不覆盖 Wayland、Qt、完整设置应用和跨应用切换。全仓 quick 尚未重新运行到全部通过。
+审查后在本机临时注册 full 测试版，与原有 C++ 版使用不同身份。WinUI 实际点击保存两套式和罗马字，偏好修订递增；已注册的生产 TSF、Server 和真实文本存储完成两套式 `gksrnr`、罗马字 `hang` 延续为 `hangug`、Return、`bang` 按原始键退格、Escape、右 Ctrl 打开汉字候选及数字选择 `韓`。切换输入框后，新框独立组字、原框文字保留；但实验编辑器的候选定位仍不稳定，不能记为整套界面通过。记事本两次截图均报 `IGraphicsCaptureItemInterop.CreateForMonitor 0x80070057`，未向其输入文字。会话输入源已恢复，测试进程已停止。系统全应用覆盖仍有缺口；Linux 结果限于 GTK3/X11，不覆盖 Wayland、Qt、完整设置应用和跨应用切换。
 
-审查后增加 `korean-romaja-controller` 原生集成入口：经生产 `prepareSession` 声明能力并创建真实 Rust 会话，再由 `handleEvent:client:` 写入 AppKit 的 `NSTextView`，检查两套式缺省、罗马字的 `ng` 延续、按原始键退格、布局外字母、紧音、标点、汉字候选、Return 传递和失焦文档归属。此入口由 macOS CTest 执行；它不经过系统已安装输入源的 IMK 跨进程投递，不能将其通过等同于系统输入源验收。
+审查后增加 `korean-romaja-controller` 原生集成入口：经生产 `prepareSession` 声明能力并创建真实 Rust 会话，再由 `handleEvent:client:` 写入 AppKit 的 `NSTextView`，检查两套式缺省、罗马字的 `ng` 延续、按原始键退格、布局外字母、紧音、标点、汉字候选、Return 传递和失焦文档归属。单进程夹具只隔离框架基类的最后一次失焦 IPC，同时检查生产控制器确实调用它。此入口已在 macOS 15 arm64 CI 通过，同次原生 CTest 共 181 项通过；x86_64 作业跳过构建，不能算作 Intel 验证。
+
+另增加独立 `korean-system-input-acceptance`：不导入控制器或宿主库，向自己的原生编辑框投递系统键盘事件，必须经已安装输入源的 IMK 连接写入文档。程序核对安装路径、输入源和实际文字，记录 marked 状态、逐项结果与未满足的前提，退出时恢复先前输入源；不请求或修改系统权限。CI 只编译并运行标明 `system_input_executed: false` 的前提探测。当前没有可用 Mac，完整系统输入入口尚未执行，不能把控制器测试通过等同于系统验收。
+
+在固定 `develop` 提交 `d4d2f5ccfec7d1f2c0229beb4ef9455ab2626543` 的独立副本与当前分支使用同一工具链成对复跑 11 项检查：七项发布或目录脚本在两边同样失败，两个 Windows C++ 检查在两边通过；符号表与语音目录在 LF 基线通过、CRLF 工作副本失败，恢复 Git 中原有 LF 字节后再验证，不改逻辑或加入豁免。Bash 的进程选择与子进程编码失败保留原始日志和测试源码哈希，仍需分别记录全仓 quick 的最终结果。
 
 ## Consequences
 
