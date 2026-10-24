@@ -164,34 +164,44 @@ int main(int argc, const char *argv[]) {
         NSWindow *window = nil;
         int status = 1;
         @try {
+            [NSApplication sharedApplication];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+            [NSApp finishLaunching];
             if (!AppKitEvents && !CGPreflightPostEventAccess())
                 [NSException raise:@"AcceptancePrerequisite" format:@"当前进程没有系统按键投递权限；未请求或修改权限，未执行验收"];
             NSURL *registered = bundle.bundleIdentifier
                 ? [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:bundle.bundleIdentifier] : nil;
             if (!registered || ![registered.URLByResolvingSymlinksInPath.path isEqual:[bundle.bundleURL URLByResolvingSymlinksInPath].path])
                 [NSException raise:@"AcceptancePrerequisite" format:@"LaunchServices 登记的输入法与指定构建不一致"];
-            NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID:sourceID};
+            NSDictionary *filter = @{(__bridge NSString *)kTISPropertyBundleID:bundle.bundleIdentifier};
             // 命令行进程使用 includeAllInstalled，再明确核对启用状态；false 会按当前语言筛掉其他模式。
             CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
-            if (!sources || CFArrayGetCount(sources) != 1) {
+            CFIndex target = -1;
+            NSMutableArray *inventory = [NSMutableArray array];
+            if (sources) for (CFIndex index = 0; index < CFArrayGetCount(sources); ++index) {
+                TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, index);
+                id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+                id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
+                [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+                if ([identifier isEqual:sourceID]) target = index;
+            }
+            report[@"installed_input_sources"] = inventory;
+            if (target < 0) {
                 if (sources) CFRelease(sources);
-                [NSException raise:@"AcceptancePrerequisite" format:@"本次构建的韩语输入源尚未安装或启用"];
+                [NSException raise:@"AcceptancePrerequisite" format:@"未找到本次构建的输入源 %@", sourceID];
             }
             CFBooleanRef enabled = (CFBooleanRef)TISGetInputSourceProperty(
-                (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0), kTISPropertyInputSourceIsEnabled);
+                (TISInputSourceRef)CFArrayGetValueAtIndex(sources, target), kTISPropertyInputSourceIsEnabled);
             if (!enabled || !CFBooleanGetValue(enabled)) {
                 CFRelease(sources);
                 [NSException raise:@"AcceptancePrerequisite" format:@"已安装的韩语输入源尚未启用"];
             }
             previous = TISCopyCurrentKeyboardInputSource();
-            OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0));
+            OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
             if (selected != noErr) {
                 CFRelease(sources);
                 [NSException raise:@"AcceptancePrerequisite" format:@"选择输入源失败：%d", (int)selected];
             }
-            [NSApplication sharedApplication];
-            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-            [NSApp finishLaunching];
             window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 700, 400)
                 styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
             window.releasedWhenClosed = NO;
@@ -204,7 +214,7 @@ int main(int argc, const char *argv[]) {
             [NSApp activateIgnoringOtherApps:YES];
             [window makeFirstResponder:first];
             Pump(1);
-            selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0));
+            selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
             CFRelease(sources);
             Pump(0.5);
             if (selected != noErr || ![SelectedSource() isEqual:sourceID])
