@@ -11,8 +11,10 @@ int main() {
   ma_device_info devices[2]{};
   devices[0].id.wasapi[0] = 'a';
   devices[1].id.wasapi[0] = 'b';
-  std::strcpy(devices[0].name, "Synthetic microphone");
-  std::strcpy(devices[1].name, "Synthetic microphone");
+  constexpr char device_name[] = "Synthetic microphone";
+  static_assert(sizeof(device_name) <= sizeof(devices[0].name));
+  std::memcpy(devices[0].name, device_name, sizeof(device_name));
+  std::memcpy(devices[1].name, device_name, sizeof(device_name));
   const auto id = wasapi_capture_device_id(devices[0].id);
   assert(id == "wasapi:0061");
   assert(is_wasapi_capture_device_id(id));

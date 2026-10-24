@@ -7,6 +7,11 @@
 #include "TsfTextServices.h"
 #include "msime_edition.h"
 
+// 旧版 MinGW 缺少此宏；取 Windows SDK msctf.h 中的同一进程作用域标志。
+#ifndef TF_IPPMF_FORPROCESS
+#define TF_IPPMF_FORPROCESS 0x10000000
+#endif
+
 namespace
 {
 const wchar_t *kWindowClass = L"TsfD2DTextBoxDemoWindow";

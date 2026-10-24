@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/common" "${CMAKE_CURRENT_SOURCE_DIR}/src/ipc" "${CMAKE_CURRENT_SOURCE_DIR}/src/candidate" "${CMAKE_CURRENT_SOURCE_DIR}/src/voice" "${CMAKE_CURRENT_SOURCE_DIR}/src/clipboard" "${CMAKE_CURRENT_SOURCE_DIR}/src/input" "${CMAKE_CURRENT_SOURCE_DIR}/src/system")
 project(MSIMEClientWindowsBoundary LANGUAGES CXX)
+# 原生宿主、演示和测试均使用 UTF-8 源码，MSVC 不能按本机代码页读取。
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/Edition.cmake")
 # vcpkg-style dependency prefixes ship a Release variant under bin/ and a Debug
 # variant under debug/bin/ for each imported target. This Client builds with
