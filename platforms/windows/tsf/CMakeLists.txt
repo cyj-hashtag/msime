@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.25)
 
 project(MSIMEClientTsf LANGUAGES CXX)
 include("${CMAKE_CURRENT_SOURCE_DIR}/../Edition.cmake")
+
+# TSF 及其独立测试都含 UTF-8 字面量，不能依赖本机代码页解释源码。
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
 enable_testing()
 add_subdirectory(tests/registration_profiles)
 add_subdirectory(tests/registration_categories)

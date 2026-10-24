@@ -242,8 +242,13 @@ jobs:
           ctest --no-tests=error --test-dir build --output-on-failure --timeout 20
       # 记录实际条件，不能把前提探测成功当作系统输入通过。
       - name: Record Korean system-input prerequisites
-        if: ${{ matrix.build == 'true' }}
-        run: build/korean-system-input-acceptance --probe > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
+        if: ${{ always() && matrix.build == 'true' }}
+        run: |
+          if [[ -x build/korean-system-input-acceptance ]]; then
+            build/korean-system-input-acceptance --probe > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
+          else
+            printf '%s\n' '{"system_input_executed":false,"blocked_by":"build failed"}' > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
+          fi
       - name: Upload Korean native validation evidence
         if: ${{ always() && matrix.build == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
