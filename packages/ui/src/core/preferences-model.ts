@@ -109,8 +109,8 @@ export type Preferences = PunctuationPreferences &
       | "handwriting"
       | "fourteen_key"
       | "nine_key_shuangpin";
-    /** Android 和 iOS 双拼的 26 / 14 键选择；缺省为 26 键，与全拼布局独立保存。 */
-    touch_shuangpin_layout?: "twenty_six_key" | "fourteen_key";
+    /** Android 双拼的 26 / 14 / 18 键、iOS 双拼的 26 / 14 键选择；缺省为 26 键，与全拼布局独立保存。 */
+    touch_shuangpin_layout?: "twenty_six_key" | "fourteen_key" | "eighteen_key";
     touch_keyboard_schemes?: TouchKeyboardSchemePreferences;
     touch_key_spacing_tenths?: number;
     touch_row_spacing_tenths?: number;
@@ -204,6 +204,9 @@ export type Preferences = PunctuationPreferences &
     traditional_chinese_variant?: TraditionalChineseVariant;
     /** 中英文之间加空格：上屏文本里汉字与 ASCII 字母、数字相邻处加一个半角空格。缺省为关，关着时文档里没有这个键。 */
     chinese_english_spacing?: boolean;
+    /** 跨次上屏的中英文边界补空格，独立开关、缺省关闭；目前仅 macOS 接入。 */
+    cross_commit_spacing?: boolean;
+    cross_commit_spacing_excluded_apps?: string[];
     /** 提示音包、音乐和指令表；全部取默认值时文档省略这一段。 */
     plugins?: PluginPreferences;
   };

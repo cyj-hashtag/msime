@@ -52,6 +52,7 @@ platforms/android/tests/device/keyboard/NineKeyPanelDeviceSmoke.java
 platforms/android/tests/device/keyboard/FourteenKeyDeviceSmoke.java
 platforms/android/tests/device/keyboard/EighteenKeyQuanpinDeviceChecks.java
 platforms/android/tests/device/keyboard/FourteenKeyShuangpinDeviceChecks.java
+platforms/android/tests/device/keyboard/EighteenKeyGeometryDeviceChecks.java
 platforms/android/tests/device/keyboard/NumberPadDeviceSmoke.java
 platforms/android/tests/device/keyboard/NineKeyShuangpinDeviceSmoke.java
 platforms/android/tests/device/keyboard/ShuangpinKeyFaceChecks.java
@@ -250,4 +251,5 @@ platforms/android/tests/device/keyboard/TextTrackpadDeviceChecks.java
 
 
 platforms/android/tests/device/keyboard/OcrProductDeviceSmoke.java
+platforms/android/tests/device/keyboard/OcrDocumentsProvider.java
 platforms/android/gradle-app/ocr-fixture/app/msime/ocr/fixture/SyntheticOcrFixture.java

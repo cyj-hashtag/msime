@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.os.SystemClock;
 import android.system.Os;
+import android.system.OsConstants;
 import android.view.accessibility.AccessibilityNodeInfo;
 import app.msime.ocr.fixture.SyntheticOcrFixture;
 import java.io.File;
@@ -28,6 +29,7 @@ public final class OcrProductDeviceSmoke extends DeviceSmoke {
     private boolean permissionDenied;
     private boolean prepareHandwriting;
     private boolean handwritingCoexistence;
+    private boolean pickerImport;
     private HostHandwriting handwriting;
     private List<?> handwritingBefore;
 
@@ -35,11 +37,13 @@ public final class OcrProductDeviceSmoke extends DeviceSmoke {
         permissionDenied = arguments != null && "true".equals(arguments.getString("ocr-permission-denied"));
         prepareHandwriting = arguments != null && "true".equals(arguments.getString("ocr-handwriting-prepare"));
         handwritingCoexistence = arguments != null && "true".equals(arguments.getString("ocr-handwriting-coexistence"));
+        pickerImport = arguments != null && "true".equals(arguments.getString("ocr-picker-import"));
         super.onCreate(arguments);
     }
 
     @Override protected String successDescription() {
         return prepareHandwriting ? "host handwriting model prepared for offline OCR coexistence"
+            : pickerImport ? "system document picker imports verified OCR module and preserves it after cancellation and corrupt replacement"
             : handwritingCoexistence ? "same host handwriting recognizer infers before and after isolated OCR offline"
             : permissionDenied ? "revoked camera permission blocks native OCR preview"
             : "pinned OCR import, readonly isolated loading, camera capture and editor insertion";
@@ -51,17 +55,99 @@ public final class OcrProductDeviceSmoke extends DeviceSmoke {
                 stage = "prepare host handwriting model";
                 handwriting = new HostHandwriting(getTargetContext());
                 handwriting.prepare();
-            } else if (handwritingCoexistence) moduleChecks();
+            } else if (pickerImport) pickerChecks();
+            else if (handwritingCoexistence) moduleChecks();
             else if (permissionDenied) permissionDeniedChecks();
             else productChecks();
         }
         catch (Exception | AssertionError error) {
             try { screenshot(prepareHandwriting ? "failure-handwriting-model"
+                : pickerImport ? "failure-picker-import"
                 : handwritingCoexistence ? "failure-handwriting-coexistence" : "failure"); }
             catch (Exception ignored) { }
             throw error;
         }
         finally { if (handwriting != null) handwriting.close(); }
+    }
+
+    /** 用真正的系统文档选择器跨 UID 传递 URI，不直接调用导入回调或安装接口。 */
+    private void pickerChecks() throws Exception {
+        check(getContext().getApplicationInfo().uid != getTargetContext().getApplicationInfo().uid,
+            "document provider and product have different UIDs");
+        android.accessibilityservice.AccessibilityServiceInfo info = automation.getServiceInfo();
+        info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+        automation.setServiceInfo(info);
+        stage = "clear synthetic module before picker";
+        File previous = new File(getTargetContext().getFilesDir(), "bootstrap/state/resource-packs/ocr-module-android");
+        if (previous.exists()) clearSyntheticModule(previous, "");
+        runtime = getTargetContext().getClassLoader().loadClass("app.msime.android.OcrRuntime");
+        open = runtime.getMethod("open", Context.class);
+        android.app.Activity activity = startActivitySync(new Intent().setClassName(getTargetContext(),
+            "app.msime.android.OcrSetupActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        try {
+            stage = "cancel first system picker";
+            openPicker();
+            check(automation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK), "cancel system document picker");
+            awaitAny(node -> equalsText("选择已下载的配套模块", node.getText()) && node.isEnabled());
+            rejectOpen("cancelled initial import");
+
+            stage = "reject corrupt picker import";
+            pickModule("corrupt");
+            importFailed();
+            rejectOpen("corrupt initial picker import");
+            screenshot("picker-rejected");
+
+            stage = "import verified module through system picker";
+            pickModule("valid");
+            awaitAny(node -> equalsText("配套模块已导入。", node.getText()));
+            recognizeFixture();
+            screenshot("picker-imported");
+
+            stage = "cancel replacement system picker";
+            openPicker();
+            check(automation.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK), "cancel replacement picker");
+            awaitAny(node -> equalsText("选择已下载的配套模块", node.getText()) && node.isEnabled());
+            recognizeFixture();
+
+            stage = "reject corrupt picker replacement";
+            pickModule("corrupt");
+            importFailed();
+            recognizeFixture();
+            screenshot("picker-preserved");
+        } finally { runOnMainSync(activity::finish); }
+    }
+
+    private void importFailed() throws Exception {
+        awaitAny(node -> node.getText() != null && node.getText().toString().startsWith("导入失败："));
+        awaitAny(node -> equalsText("选择已下载的配套模块", node.getText()) && node.isEnabled());
+    }
+
+    private void openPicker() throws Exception {
+        tap(node -> equalsText("选择已下载的配套模块", node.getText()) && node.isEnabled());
+        awaitAny(this::pickerNode);
+    }
+
+    private void pickModule(String id) throws Exception {
+        String operation = stage;
+        stage = operation + " / open picker";
+        openPicker();
+        stage = operation + " / show document roots";
+        tap(node -> pickerNode(node) && node.getContentDescription() != null
+            && (node.getContentDescription().toString().equalsIgnoreCase("Show roots")
+                || node.getContentDescription().toString().contains("根目录")
+                || node.getContentDescription().toString().contains("导航")));
+        stage = operation + " / choose synthetic provider";
+        tap(node -> pickerNode(node) && equalsText("MSIME OCR 测试模块", node.getText())
+            && "android:id/title".equals(node.getViewIdResourceName()));
+        stage = operation + " / choose synthetic document";
+        awaitAny(node -> pickerNode(node) && equalsText("msime-synthetic-ocr-" + id + ".apk", node.getText()));
+        screenshot("picker-documents");
+        tap(node -> pickerNode(node) && equalsText("msime-synthetic-ocr-" + id + ".apk", node.getText()));
+        stage = operation;
+    }
+
+    private boolean pickerNode(AccessibilityNodeInfo node) {
+        return node.getPackageName() != null && node.getPackageName().toString().endsWith(".documentsui");
     }
 
     /** 撤权会终止目标进程，由脚本在两次 instrumentation 之间撤回权限。 */
@@ -90,16 +176,7 @@ public final class OcrProductDeviceSmoke extends DeviceSmoke {
         check(connectivity.getActiveNetwork() == null, "product OCR test runs without an active network");
         stage = "clear prior synthetic module";
         File previous = new File(context.getFilesDir(), "bootstrap/state/resource-packs/ocr-module-android");
-        if (previous.exists()) {
-            File[] entries = previous.listFiles();
-            check(entries != null, "synthetic module directory readable");
-            for (File entry : entries) {
-                check(entry.getName().equals("msime-ocr-v1.apk") || entry.getName().equals("msime-model.json"),
-                    "only known synthetic module files can be removed");
-                check(entry.delete(), "remove prior synthetic module file");
-            }
-            check(previous.delete(), "remove prior synthetic module directory");
-        }
+        if (previous.exists()) clearSyntheticModule(previous, "");
         ClassLoader loader = context.getClassLoader();
         runtime = loader.loadClass("app.msime.android.OcrRuntime");
         open = runtime.getMethod("open", Context.class);
@@ -142,6 +219,30 @@ public final class OcrProductDeviceSmoke extends DeviceSmoke {
         source.delete();
         stage = "host handwriting client after OCR";
         handwritingClient();
+    }
+
+    /** ART 还会生成性能采样和锁；只清理固定合成模块的已知条目，不跟随符号链接。 */
+    private void clearSyntheticModule(File path, String relative) throws Exception {
+        int mode = Os.lstat(path.getAbsolutePath()).st_mode;
+        if (relative.isEmpty() || relative.equals("oat") || relative.equals("oat/x86_64")) {
+            check(OsConstants.S_ISDIR(mode), "synthetic module cache is a real directory");
+            File[] entries = path.listFiles();
+            check(entries != null, "synthetic module directory readable");
+            for (File entry : entries)
+                clearSyntheticModule(entry, relative.isEmpty() ? entry.getName() : relative + "/" + entry.getName());
+        } else {
+            check(relative.equals("msime-ocr-v1.apk") || relative.equals("msime-model.json")
+                || relative.equals("msime-ocr-v1.apk.x86_64.flock")
+                || relative.equals("oat/msime-ocr-v1.apk.cur.prof")
+                || relative.equals("oat/msime-ocr-v1.apk.prof")
+                || relative.equals("oat/x86_64/msime-ocr-v1.odex")
+                || relative.equals("oat/x86_64/msime-ocr-v1.vdex")
+                || relative.equals("oat/x86_64/msime-ocr-v1.art"), "only known synthetic module files can be removed: "
+                    + (relative.matches("(?:oat/|oat/x86_64/)?msime-ocr-v1[.a-z0-9_-]{0,80}")
+                        ? relative : "unrecognized path"));
+            check(OsConstants.S_ISREG(mode), "synthetic module cache is a regular file");
+        }
+        check(path.delete(), "remove prior synthetic module entry");
     }
 
     private void productChecks() throws Exception {

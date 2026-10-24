@@ -539,6 +539,7 @@ export type { HomePageActions } from "./keyboard/home-model";
 export { openKeyboardSwitchGuide } from "./keyboard/keyboard-switch-guide";
 export {
   WelcomeFlowPage,
+  HarmonyLaunchSplash,
   type OnboardingActions,
   type OnboardingChoices,
   type OnboardingInputScheme,
@@ -898,6 +899,10 @@ export {
   ChineseEnglishSpacingSection,
   type ChineseEnglishSpacingSectionProps,
 } from "./settings/chinese-english-spacing-section";
+export {
+  CrossCommitSpacingSection,
+  type CrossCommitSpacingSectionProps,
+} from "./settings/cross-commit-spacing-section";
 export {
   CloudCandidatesSection,
   type CloudCandidatesSectionProps,
