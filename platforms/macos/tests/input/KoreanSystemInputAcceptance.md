@@ -12,12 +12,12 @@
 
 ## 执行
 
-在已配置的 macOS 构建目录中编译两个入口，例如：
+在仓库规定且已配置的 macOS 构建目录中编译两个入口：
 
 ```sh
-cmake --build build --target korean-romaja-controller-test korean-system-input-acceptance
-ctest --test-dir build -R '^korean-romaja-controller$' --output-on-failure
-build/korean-system-input-acceptance --probe
+cmake --build target/macos-isolated --target korean-romaja-controller-test korean-system-input-acceptance
+ctest --test-dir target/macos-isolated -R '^korean-romaja-controller$' --output-on-failure
+target/macos-isolated/korean-system-input-acceptance --probe
 ```
 
 `--probe` 只报告前提，始终包含 `system_input_executed: false`。CI 的 `korean-system-input-prerequisites` 运行这一探测，不将它算作系统输入通过。
@@ -25,7 +25,7 @@ build/korean-system-input-acceptance --probe
 将下面的输入法路径替换为本次构建实际安装的绝对路径，报告路径也必须为绝对路径。先保留缺省两套式并执行：
 
 ```sh
-build/korean-system-input-acceptance dubeolsik \
+target/macos-isolated/korean-system-input-acceptance dubeolsik \
   "$HOME/Library/Input Methods/水杉输入法.app" \
   "$PWD/korean-system-dubeolsik.json"
 ```
@@ -33,7 +33,7 @@ build/korean-system-input-acceptance dubeolsik \
 再从设置界面保存罗马字布局，执行：
 
 ```sh
-build/korean-system-input-acceptance romaja \
+target/macos-isolated/korean-system-input-acceptance romaja \
   "$HOME/Library/Input Methods/水杉输入法.app" \
   "$PWD/korean-system-romaja.json"
 ```
