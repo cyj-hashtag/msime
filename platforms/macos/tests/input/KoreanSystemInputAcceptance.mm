@@ -255,6 +255,11 @@ int main(int argc, const char *argv[]) {
             [first.inputContext activate];
             report[@"application_active"] = @(NSApp.isActive);
             report[@"frontmost_pid"] = @(NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
+            if (previous) report[@"baseline_selection_status"] = @(TISSelectInputSource(previous));
+            NSMutableArray *available = [NSMutableArray array];
+            for (NSString *identifier in first.inputContext.keyboardInputSources)
+                if ([identifier hasPrefix:bundle.bundleIdentifier]) [available addObject:identifier];
+            report[@"input_context_available_sources"] = available;
             OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
             CFRelease(sources);
             report[@"tis_select_status"] = @(selected);
@@ -263,10 +268,17 @@ int main(int argc, const char *argv[]) {
                 first.inputContext.selectedKeyboardInputSource = sourceID;
                 report[@"selection_transport"] = @"NSTextInputContext.selectedKeyboardInputSource";
             }
-            Pump(0.5);
+            // 冷启动可异步恢复模式；主模式回退若已被产品切成韩语，同样必须继续核对真实输入。
+            BOOL (^sourceReady)(void) = ^BOOL {
+                NSString *actual = SelectedSource();
+                return [actual isEqual:sourceID] || (argc == 6 &&
+                    [actual isEqual:[bundle.bundleIdentifier stringByAppendingString:@".Korean"]]);
+            };
+            NSDate *sourceDeadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+            while (!sourceReady() && sourceDeadline.timeIntervalSinceNow > 0) Pump(0.05);
             report[@"selected_input_source"] = SelectedSource();
             report[@"input_context_source"] = first.inputContext.selectedKeyboardInputSource ?: @"";
-            if (![SelectedSource() isEqual:sourceID])
+            if (!sourceReady())
                 [NSException raise:@"AcceptancePrerequisite" format:@"活动文本框无法选择本次输入源（TIS 状态 %d）；实际为 %@", (int)selected, SelectedSource()];
             NSArray<NSRunningApplication *> *servers = [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle.bundleIdentifier];
             NSRunningApplication *server = nil;

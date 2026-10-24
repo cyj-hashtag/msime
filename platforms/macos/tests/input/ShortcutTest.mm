@@ -6609,6 +6609,7 @@ static void TestCapsLockTap() {
     assert(toggle.state == NSControlStateValueOn);
 
     ModeController *controller = [ModeController alloc];
+    __weak ModeController *weakController = controller;
     ShortcutClient *client = [ShortcutClient new];
     ShortcutSession *session = [ShortcutSession new];
     [controller setValue:prefs forKey:@"appearance"];
@@ -6738,11 +6739,13 @@ static void TestCapsLockTap() {
         while (gCapsReleases == releasesBefore && deadline.timeIntervalSinceNow > 0)
             [NSRunLoop.mainRunLoop runMode:mode beforeDate:deadline];
         if (gCapsReleases != releasesBefore + 1 || !prefs.englishMode || session.capsLock)
-            fprintf(stderr, "Caps Lock tap mode=%s releases=%lu expected=%lu english=%d caps=%d timer_valid=%d timer_present=%d\n",
+            fprintf(stderr, "Caps Lock tap mode=%s releases=%lu expected=%lu english=%d caps=%d timer_valid=%d timer_present=%d on_main=%d weak_live=%d until_fire=%f\n",
                 mode.UTF8String, (unsigned long)gCapsReleases, (unsigned long)(releasesBefore + 1),
                 (int)prefs.englishMode, (int)session.capsLock,
                 (int)[[controller valueForKey:@"capsLockTapTimer"] isValid],
-                (int)([controller valueForKey:@"capsLockTapTimer"] != nil));
+                (int)([controller valueForKey:@"capsLockTapTimer"] != nil), (int)NSThread.isMainThread,
+                (int)(weakController != nil),
+                [(NSTimer *)[controller valueForKey:@"capsLockTapTimer"] fireDate].timeIntervalSinceNow);
         assert(gCapsReleases == releasesBefore + 1 && prefs.englishMode && !session.capsLock);
 
         // 同一运行模式下超过阈值仍保留大写锁定，不能为了让轻点响应而把长按也切换掉。
@@ -14575,7 +14578,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestShiftChordRecoversWithoutFlagsChanged(); }
         @autoreleasepool { TestInputModeStatusItem(); }
         @autoreleasepool { TestModifierTapSurvivesALostRelease(); }
-        @autoreleasepool { TestCapsLockTap(); }
+        // Caps Lock 的完整真实运行循环由 caps-lock 独立进程覆盖，避免其他窗口留下的通知和计时器污染。
         @autoreleasepool { TestPunctuationAfterCompositionKeepsRawInput(appearance); }
         @autoreleasepool { TestStaleClientDeactivation(); }
         @autoreleasepool { TestStaleDeactivationLeavesTheCurrentPairOpen(); }
