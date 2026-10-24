@@ -84,6 +84,46 @@ static void Clear(NSTextView *view) {
     [view setSelectedRange:NSMakeRange(0, 0)];
 }
 
+static NSDictionary *Rectangle(CGRect rect) {
+    return @{@"x":@(rect.origin.x), @"y":@(rect.origin.y),
+        @"width":@(rect.size.width), @"height":@(rect.size.height)};
+}
+
+// 只读取测试输入法的窗口几何，不抓取其他应用画面，也不依赖屏幕录制权限。
+static void ExpectCandidateWindow(NSMutableArray *results, NSTextView *view, pid_t serverPID) {
+    Pump(0.3);
+    NSRect rect = [view firstRectForCharacterRange:view.selectedRange actualRange:nullptr];
+    const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+    const CGRect caret = CGRectMake(rect.origin.x, top - NSMaxY(rect), rect.size.width, rect.size.height);
+    NSArray<NSDictionary *> *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+    NSUInteger editorIndex = NSNotFound;
+    for (NSUInteger i = 0; i < windows.count; ++i) {
+        if ([windows[i][(id)kCGWindowOwnerPID] intValue] == getpid() &&
+            [windows[i][(id)kCGWindowNumber] integerValue] == view.window.windowNumber) {
+            editorIndex = i;
+            break;
+        }
+    }
+    NSMutableArray *owned = [NSMutableArray array];
+    BOOL passed = NO;
+    for (NSUInteger i = 0; i < windows.count; ++i) {
+        NSDictionary *window = windows[i];
+        if ([window[(id)kCGWindowOwnerPID] intValue] != serverPID) continue;
+        CGRect bounds = CGRectZero;
+        if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)window[(id)kCGWindowBounds], &bounds)) continue;
+        const BOOL near = CGRectIntersectsRect(CGRectInset(caret, -48, -48), bounds);
+        const BOOL above = editorIndex != NSNotFound && i < editorIndex;
+        [owned addObject:@{@"bounds":Rectangle(bounds), @"near_caret":@(near), @"above_editor":@(above)}];
+        if (bounds.size.width > 30 && bounds.size.height > 30 &&
+            [window[(id)kCGWindowAlpha] doubleValue] > 0 && near && above) passed = YES;
+    }
+    NSDictionary *result = @{@"case":@"候选窗口靠近光标且位于编辑器前方", @"caret":Rectangle(caret),
+        @"input_method_windows":owned, @"passed":@(passed)};
+    [results addObject:result];
+    if (!passed) [NSException raise:@"AcceptanceFailure" format:@"候选窗口位置：%@", result];
+}
+
 // 仅在一次性的 CI 登录会话里模拟用户添加韩语输入源；生产安装只默认启用主模式。
 static int EnableCISource(NSString *bundlePath) {
     if (![NSProcessInfo.processInfo.environment[@"GITHUB_ACTIONS"] isEqual:@"true"] || !bundlePath.isAbsolutePath)
@@ -182,7 +222,9 @@ int main(int argc, const char *argv[]) {
                 TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, index);
                 id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
                 id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
-                [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+                id selectable = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable);
+                [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO,
+                    @"select_capable":selectable ?: @NO}];
                 if ([identifier isEqual:sourceID]) target = index;
             }
             report[@"installed_input_sources"] = inventory;
@@ -197,11 +239,6 @@ int main(int argc, const char *argv[]) {
                 [NSException raise:@"AcceptancePrerequisite" format:@"已安装的韩语输入源尚未启用"];
             }
             previous = TISCopyCurrentKeyboardInputSource();
-            OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
-            if (selected != noErr) {
-                CFRelease(sources);
-                [NSException raise:@"AcceptancePrerequisite" format:@"选择输入源失败：%d", (int)selected];
-            }
             window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 700, 400)
                 styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
             window.releasedWhenClosed = NO;
@@ -214,11 +251,23 @@ int main(int argc, const char *argv[]) {
             [NSApp activateIgnoringOtherApps:YES];
             [window makeFirstResponder:first];
             Pump(1);
-            selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
+            // 先建立活动的文本输入上下文，避免无文档的命令行进程在选择输入法时返回 paramErr。
+            [first.inputContext activate];
+            report[@"application_active"] = @(NSApp.isActive);
+            report[@"frontmost_pid"] = @(NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier);
+            OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, target));
             CFRelease(sources);
+            report[@"tis_select_status"] = @(selected);
+            report[@"selection_transport"] = @"TISSelectInputSource";
+            if (selected != noErr) {
+                [first.inputContext selectInputSource:sourceID];
+                report[@"selection_transport"] = @"NSTextInputContext.selectInputSource";
+            }
             Pump(0.5);
-            if (selected != noErr || ![SelectedSource() isEqual:sourceID])
-                [NSException raise:@"AcceptancePrerequisite" format:@"窗口激活后系统恢复了其他输入源；请先在此窗口选择水杉韩语"];
+            report[@"selected_input_source"] = SelectedSource();
+            report[@"input_context_source"] = first.inputContext.selectedKeyboardInputSource ?: @"";
+            if (![SelectedSource() isEqual:sourceID])
+                [NSException raise:@"AcceptancePrerequisite" format:@"活动文本框无法选择本次输入源（TIS 状态 %d）；实际为 %@", (int)selected, SelectedSource()];
             NSArray<NSRunningApplication *> *servers = [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle.bundleIdentifier];
             NSRunningApplication *server = nil;
             for (NSRunningApplication *application in servers) {
@@ -252,7 +301,9 @@ int main(int argc, const char *argv[]) {
                 Type(@"hanqvz");
                 Expect(results, first, @"한qvz", NO, @"布局外字母保留"); Clear(first);
             }
-            Type(romaja ? @"han" : @"gks"); Key(36, kCGEventFlagMaskAlternate); Key(18);
+            Type(romaja ? @"han" : @"gks"); Key(36, kCGEventFlagMaskAlternate);
+            ExpectCandidateWindow(results, first, server.processIdentifier);
+            Key(18);
             Expect(results, first, @"韓", NO, @"系统候选窗口选择汉字"); Clear(first);
             Type(romaja ? @"han" : @"gks");
             [window makeFirstResponder:second]; Pump(0.5);

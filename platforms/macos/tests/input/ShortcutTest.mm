@@ -6722,6 +6722,10 @@ static void TestCapsLockTap() {
 
     // 真正推进运行循环：直接调用 pollCapsLockTap 看不出默认模式的定时器会在事件跟踪或模态面板期间停住。
     prefs.capsLockTapShortcut = YES;
+    // 独立测试进程没有真实用户事件，保持这段有界验收活动，避免后台节能合并 10 毫秒计时器。
+    id timerActivity = [NSProcessInfo.processInfo beginActivityWithOptions:
+        NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical
+        reason:@"验收输入法修饰键计时器"];
     for (NSRunLoopMode mode in @[NSDefaultRunLoopMode, NSEventTrackingRunLoopMode, NSModalPanelRunLoopMode]) {
         CFRunLoopAddCommonMode(CFRunLoopGetMain(), (__bridge CFStringRef)mode);
         assert(![controller handleEvent:capsOff(10.0) client:client]);
@@ -6752,6 +6756,7 @@ static void TestCapsLockTap() {
         assert(session.capsLock && prefs.englishMode && gCapsReleases == releasesBefore + 1);
         gCapsHeld = false;
     }
+    [NSProcessInfo.processInfo endActivity:timerActivity];
 
     // 实体松手的 FlagsChanged 可能先于下一次轮询抵达；锁定位仍开时不能取消这次轻点，也不能重新计时。
     for (unsigned short code : {static_cast<unsigned short>(0x39), static_cast<unsigned short>(0xff)}) {
