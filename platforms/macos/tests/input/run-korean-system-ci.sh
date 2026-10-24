@@ -37,6 +37,7 @@ if ! "$executable" --register-input-source > "$reports/registration.log" 2>&1; t
   printf '%s\n' '{"passed":false,"system_input_executed":false,"blocked_by":"input source registration failed"}' > "$reports/registration.json"
   exit 1
 fi
+"$build/korean-system-input-acceptance" --enable-ci-source "$installed" > "$reports/enabled-sources.json"
 for layout in dubeolsik romaja; do
   python3 - "$options" "$reports/profile-$layout" "$layout" <<'PY'
 import json, pathlib, sys

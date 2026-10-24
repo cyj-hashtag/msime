@@ -84,8 +84,53 @@ static void Clear(NSTextView *view) {
     [view setSelectedRange:NSMakeRange(0, 0)];
 }
 
+// 仅在一次性的 CI 登录会话里模拟用户添加韩语输入源；生产安装只默认启用主模式。
+static int EnableCISource(NSString *bundlePath) {
+    if (![NSProcessInfo.processInfo.environment[@"GITHUB_ACTIONS"] isEqual:@"true"] || !bundlePath.isAbsolutePath)
+        return 2;
+    NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
+    if (!bundle.bundleIdentifier) return 2;
+    NSString *koreanID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
+    NSDictionary *filter = @{(__bridge NSString *)kTISPropertyBundleID:bundle.bundleIdentifier};
+    NSMutableArray *inventory = [NSMutableArray array];
+    BOOL enabledKorean = NO;
+    OSStatus status = noErr;
+    CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+    if (sources) {
+        for (NSString *wanted in @[bundle.bundleIdentifier, koreanID]) {
+            for (CFIndex i = 0; i < CFArrayGetCount(sources); ++i) {
+                TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
+                NSString *identifier = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+                if (![identifier isEqual:wanted]) continue;
+                status = TISEnableInputSource(source);
+                if (status == noErr && [identifier isEqual:koreanID]) enabledKorean = YES;
+                if (status != noErr) break;
+            }
+            if (status != noErr) break;
+        }
+        CFRelease(sources);
+    }
+    sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+    if (sources) {
+        for (CFIndex i = 0; i < CFArrayGetCount(sources); ++i) {
+            TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
+            id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+            id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
+            [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+        }
+        CFRelease(sources);
+    }
+    NSDictionary *report = @{@"bundle_id":bundle.bundleIdentifier, @"sources":inventory,
+        @"enable_status":@(status), @"passed":@(enabledKorean && status == noErr)};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
+    puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
+    return enabledKorean && status == noErr ? 0 : 1;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc == 3 && strcmp(argv[1], "--enable-ci-source") == 0)
+            return EnableCISource(@(argv[2]));
         if (argc == 2 && strcmp(argv[1], "--probe") == 0) {
             NSDictionary *probe = @{@"system_input_executed":@NO,
                 @"event_posting_allowed":@(CGPreflightPostEventAccess()), @"input_source":SelectedSource()};
@@ -119,10 +164,17 @@ int main(int argc, const char *argv[]) {
             if (!registered || ![registered.URLByResolvingSymlinksInPath.path isEqual:[bundle.bundleURL URLByResolvingSymlinksInPath].path])
                 [NSException raise:@"AcceptancePrerequisite" format:@"LaunchServices 登记的输入法与指定构建不一致"];
             NSDictionary *filter = @{(__bridge NSString *)kTISPropertyInputSourceID:sourceID};
-            CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, false);
+            // 命令行进程使用 includeAllInstalled，再明确核对启用状态；false 会按当前语言筛掉其他模式。
+            CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
             if (!sources || CFArrayGetCount(sources) != 1) {
                 if (sources) CFRelease(sources);
                 [NSException raise:@"AcceptancePrerequisite" format:@"本次构建的韩语输入源尚未安装或启用"];
+            }
+            CFBooleanRef enabled = (CFBooleanRef)TISGetInputSourceProperty(
+                (TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0), kTISPropertyInputSourceIsEnabled);
+            if (!enabled || !CFBooleanGetValue(enabled)) {
+                CFRelease(sources);
+                [NSException raise:@"AcceptancePrerequisite" format:@"已安装的韩语输入源尚未启用"];
             }
             previous = TISCopyCurrentKeyboardInputSource();
             OSStatus selected = TISSelectInputSource((TISInputSourceRef)CFArrayGetValueAtIndex(sources, 0));
