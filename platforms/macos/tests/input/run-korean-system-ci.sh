@@ -26,8 +26,10 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$(dirname "$installed")" "$state"
 ditto "$build/水杉输入法.app" "$installed"
-codesign --force --deep --options runtime --entitlements "$root/platforms/macos/resources/VoiceInput.entitlements" --sign - "$installed"
+# 临时开发 bundle 使用 ad-hoc 签名；没有 Developer ID 团队身份可供 Hardened Runtime 校验动态库。
+codesign --force --deep --entitlements "$root/platforms/macos/resources/VoiceInput.entitlements" --sign - "$installed"
 codesign --verify --deep --strict "$installed"
+codesign -dv --verbose=4 "$installed" > "$reports/signature.log" 2>&1
 registrar='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 "$registrar" -f "$installed"
 "$registrar" -u "$build/水杉输入法.app" || true
@@ -62,6 +64,11 @@ PY
   "$executable" > "$reports/server-$layout.log" 2>&1 &
   server_pid=$!
   sleep 2
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    cat "$reports/server-$layout.log" >&2
+    echo '已安装输入法启动后立即退出，未执行系统输入。' >&2
+    exit 1
+  fi
   python3 - "$build/korean-system-input-acceptance" "$layout" "$installed" "$reports/$layout.json" "$reports/enabled-sources.json" <<'PY'
 import json, pathlib, subprocess, sys
 source = json.loads(pathlib.Path(sys.argv[-1]).read_text())
