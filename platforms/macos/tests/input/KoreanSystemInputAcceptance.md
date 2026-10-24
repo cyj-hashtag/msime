@@ -1,0 +1,43 @@
+# 韩语系统输入验收
+
+`korean-romaja-controller` 检查生产控制器、真实 Rust 会话和 AppKit 文档；它隔离框架基类的最后一次失焦 IPC，不代表系统输入源验收。
+
+`korean-system-input-acceptance` 是另一个独立可执行文件。它不链接宿主库、不导入输入控制器，只向自己的应用进程投递系统键盘事件，由已安装输入法通过 InputMethodKit 写入两个原生 `NSTextView`。检查预编辑、后续组字、Return、退格、取消、布局外字母、紧音、标点、汉字候选及焦点归属，逐项输出实际文字、marked 状态和输入源 ID。
+
+## 前提
+
+在能够运行图形应用的 Mac 登录会话中，按 `platforms/macos/scripts/install.sh` 的要求安装、签名本次构建，并在系统输入源中添加韩语模式。新安装后是否需要重新登录，以 `scripts/check_input_source.swift` 的检查为准。
+
+先在水杉设置中选择韩语和待验收的布局。验收程序只读取所选布局对应的结果，不替用户改写偏好。运行期间不要操作键鼠。系统事件投递权限须由测试者自行配置；程序仅调用 `CGPreflightPostEventAccess` 查询，不请求或修改权限。
+
+## 执行
+
+在已配置的 macOS 构建目录中编译两个入口，例如：
+
+```sh
+cmake --build build --target korean-romaja-controller-test korean-system-input-acceptance
+ctest --test-dir build -R '^korean-romaja-controller$' --output-on-failure
+build/korean-system-input-acceptance --probe
+```
+
+`--probe` 只报告前提，始终包含 `system_input_executed: false`。CI 的 `korean-system-input-prerequisites` 运行这一探测，不将它算作系统输入通过。
+
+将下面的输入法路径替换为本次构建实际安装的绝对路径，报告路径也必须为绝对路径。先保留缺省两套式并执行：
+
+```sh
+build/korean-system-input-acceptance dubeolsik \
+  "$HOME/Library/Input Methods/水杉输入法.app" \
+  "$PWD/korean-system-dubeolsik.json"
+```
+
+再从设置界面保存罗马字布局，执行：
+
+```sh
+build/korean-system-input-acceptance romaja \
+  "$HOME/Library/Input Methods/水杉输入法.app" \
+  "$PWD/korean-system-romaja.json"
+```
+
+程序核对 LaunchServices 登记路径与指定输入法路径一致，在自己的前台窗口选择该输入法的韩语模式，退出时恢复此前的输入源。它不会注册、卸载或替换输入法。
+
+退出码 `0` 且报告的 `system_input_executed`、`passed` 均为 `true` 才算该布局通过；`77` 表示前提不满足，`1` 表示输入断言失败，`2` 表示参数或报告写入失败。验收材料应同时附上被安装构建的提交 SHA、两个 JSON 报告，以及测试者对候选界面和设置保存的实际观察；缺少其中一项需明确记录。

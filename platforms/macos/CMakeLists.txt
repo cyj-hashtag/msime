@@ -1039,6 +1039,12 @@ target_link_libraries(korean-romaja-controller-test PRIVATE ${MSIME_CONTROLLER_T
 target_compile_options(korean-romaja-controller-test PRIVATE -fobjc-arc -Wall -Wextra -Werror -UNDEBUG "-F${MSIME_SPARKLE_ROOT}")
 add_test(NAME korean-romaja-controller COMMAND korean-romaja-controller-test)
 set_tests_properties(korean-romaja-controller PROPERTIES TIMEOUT 60)
+
+# 系统输入验收独立于控制器测试：CI 只编译并探测条件，实际运行需要已安装输入源的桌面会话。
+add_executable(korean-system-input-acceptance tests/input/KoreanSystemInputAcceptance.mm)
+target_compile_options(korean-system-input-acceptance PRIVATE -fobjc-arc -Wall -Wextra -Werror)
+target_link_libraries(korean-system-input-acceptance PRIVATE "-framework AppKit" "-framework Carbon")
+add_test(NAME korean-system-input-prerequisites COMMAND korean-system-input-acceptance --probe)
 target_link_libraries(http-voice-controller-test PRIVATE ${MSIME_CONTROLLER_TEST_LIBS})
 target_compile_options(http-voice-controller-test PRIVATE -fobjc-arc -Wall -Wextra -Werror -UNDEBUG "-F${MSIME_SPARKLE_ROOT}")
 add_test(NAME http-voice-controller COMMAND http-voice-controller-test)
