@@ -38,6 +38,7 @@ if ! "$executable" --register-input-source > "$reports/registration.log" 2>&1; t
   exit 1
 fi
 "$build/korean-system-input-acceptance" --enable-ci-source "$installed" > "$reports/enabled-sources.json"
+if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
 for layout in dubeolsik romaja; do
   python3 - "$options" "$reports/profile-$layout" "$layout" <<'PY'
 import json, pathlib, sys
@@ -61,9 +62,13 @@ PY
   "$executable" > "$reports/server-$layout.log" 2>&1 &
   server_pid=$!
   sleep 2
-  python3 - "$build/korean-system-input-acceptance" "$layout" "$installed" "$reports/$layout.json" <<'PY'
-import subprocess, sys
-subprocess.run([*sys.argv[1:], "--appkit-events", "--primary-source"], check=True, timeout=90)
+  python3 - "$build/korean-system-input-acceptance" "$layout" "$installed" "$reports/$layout.json" "$reports/enabled-sources.json" <<'PY'
+import json, pathlib, subprocess, sys
+source = json.loads(pathlib.Path(sys.argv[-1]).read_text())
+flags = ["--appkit-events"]
+if not source["korean_mode_enabled"]:
+    flags.append("--primary-source")
+subprocess.run([*sys.argv[1:-1], *flags], check=True, timeout=90)
 PY
   kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true
