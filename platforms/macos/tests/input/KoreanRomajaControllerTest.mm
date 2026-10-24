@@ -60,7 +60,7 @@ int main() {
             NSMutableDictionary *preferences = [@{@"scheme":@"korean", @"default_ime_mode":@"chinese",
                 @"candidate_page_size":@5, @"chinese_punctuation":@YES,
                 @"learning":@NO, @"cloud_candidates":@NO, @"candidate_translations":@NO,
-                @"floating_toolbar":@NO, @"tsf_preedit_style":@"empty"} mutableCopy];
+                @"floating_toolbar":@{@"enabled":@NO}, @"tsf_preedit_style":@"empty"} mutableCopy];
             if (romaja.boolValue) preferences[@"korean"] = @{@"layout":@"romaja"};
             NSMutableDictionary *options = [@{@"api_version":@1, @"preferences":preferences} mutableCopy];
             for (NSString *name in @[@"resources", @"user_data", @"cache", @"dictionaries"]) {
