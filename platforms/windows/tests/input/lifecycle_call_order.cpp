@@ -38,6 +38,7 @@ uint64_t fake_generation = 1;
 uint32_t fake_lifecycle = 0;
 // 下一次选词只用掉一部分读音时剩下的字母（部分选词）；空时整段上屏。
 std::string fake_partial_left;
+std::string fake_phrase_prefix;
 // 假候选的来源（CandidateSource）；8 是整句，ServerSession::select 把它整段上屏、丢掉剩下的读音。
 uint8_t fake_source = 0;
 // 高亮候选的释义；Ctrl+Enter 只有一条释义时由 Server 合成上屏。
@@ -70,16 +71,27 @@ nlohmann::json view() {
           {"editing_text", fake_editing},  {"preedit", fake_editing},       {"caret_position", fake_editing.size()},
           {"candidates", candidates}, {"local_mode", "none"},     {"scheme", fake_scheme},
           {"spelling_symbols", ""},   {"dedicated_english", false}, {"conversion", fake_conversion},
-          {"page", 0}};
+          {"page", 0}, {"phrase_prefix", fake_phrase_prefix}};
 }
 
 // 一次派发的回复。像核心一样：会话开着 FEEDBACK 时每个派发回复都带 feedback，有上屏时特效不为 0；`picked` 的选词上屏了、读音还剩时是部分选词，HOST_HOLDS_PIECES 下核心按暂存的一段算，特效为 0。
 char *transition(const nlohmann::json &commit, bool picked = false) {
   const bool held = picked && !commit.is_null() && !fake_editing.empty() &&
                     (fake_lifecycle & MSIME_LIFECYCLE_HOST_HOLDS_PIECES) != 0;
+  auto delivered = commit;
+  // HOST_HOLDS_PIECES 的真实契约：部分选词留在 Runtime 前缀中，最终提交才包含整段文字。
+  if (picked && !commit.is_null() && (fake_lifecycle & MSIME_LIFECYCLE_HOST_HOLDS_PIECES)) {
+    if (held) {
+      fake_phrase_prefix += commit.get<std::string>();
+      delivered = nullptr;
+    } else {
+      delivered = fake_phrase_prefix + commit.get<std::string>();
+      fake_phrase_prefix.clear();
+    }
+  }
   ++fake_generation;
-  nlohmann::json value{{"handled", true}, {"commit", commit}, {"diagnostic", nullptr}, {"view", view()}};
-  value["commit_context"] = commit.is_null() ? nlohmann::json(nullptr)
+  nlohmann::json value{{"handled", true}, {"commit", delivered}, {"diagnostic", nullptr}, {"view", view()}};
+  value["commit_context"] = delivered.is_null() ? nlohmann::json(nullptr)
                                              : nlohmann::json{{"scheme", fake_scheme},
                                                               {"local_mode", "none"},
                                                               {"typing_statistics", true}};
@@ -147,6 +159,7 @@ FanyImeNamedpipeData key(uint32_t keycode, char16_t text, uint64_t request) {
 extern "C" {
 uint32_t msime_client_abi_version(void) { return 3; }
 char *msime_client_create(const uint8_t *, size_t) {
+  fake_phrase_prefix.clear();
   record("create");
   return answer({{"session", fake_session}});
 }
@@ -194,6 +207,7 @@ char *msime_client_command(uint64_t, uint32_t command) {
     fake_editing.clear();
   } else if (command == MSIME_CANCEL || command == MSIME_CANCEL_AFTER_HOST_COMMIT) {
     fake_editing.clear();
+    fake_phrase_prefix.clear();
     fake_conversion.clear();
   }
   return transition(commit, command == MSIME_COMMIT_CANDIDATE);
@@ -350,6 +364,8 @@ int main() {
       REQUIRE(focused.confirm(lease, request++));
       EXPECT_TRACE({"key:1", "command:" + std::to_string(MSIME_COMMIT_CANDIDATE)});
       REQUIRE(effects.take() == typing_effect_mark_commit((1u << 17) | 3u));
+      if (recorded != std::vector<std::string>({"啊", "啊啊"}))
+        std::cerr << "Unexpected recorded commits: " << nlohmann::json(recorded).dump() << '\n';
       REQUIRE(recorded == std::vector<std::string>({"啊", "啊啊"}));
 
       // 按住不放的自动重复带 MSIME_KEY_REPEAT。

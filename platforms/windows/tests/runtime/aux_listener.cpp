@@ -336,8 +336,16 @@ int main() {
       require(collected.wait_for(7));
 
       // A client that connects and never writes must not wedge the endpoint.
-      HANDLE idle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-                                nullptr, OPEN_EXISTING, 0, nullptr);
+      // 前一次发送结束后，监听线程还要重新进入 accept；只重试忙碌/尚未就绪的连接。
+      HANDLE idle = INVALID_HANDLE_VALUE;
+      for (int attempt = 0; attempt < 50; ++attempt) {
+        idle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                           nullptr, OPEN_EXISTING, 0, nullptr);
+        if (idle != INVALID_HANDLE_VALUE) break;
+        const DWORD connection_error = GetLastError();
+        if (connection_error != ERROR_PIPE_BUSY && connection_error != ERROR_FILE_NOT_FOUND) break;
+        Sleep(20);
+      }
       require(idle != INVALID_HANDLE_VALUE);
       CloseHandle(idle);
       require(deliver(name, L"LangbarRightClick|20|20|60|60", clicks, 8));
