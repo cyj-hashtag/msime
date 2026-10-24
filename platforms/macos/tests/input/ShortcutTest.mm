@@ -6733,6 +6733,12 @@ static void TestCapsLockTap() {
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:1.0];
         while (gCapsReleases == releasesBefore && deadline.timeIntervalSinceNow > 0)
             [NSRunLoop.mainRunLoop runMode:mode beforeDate:deadline];
+        if (gCapsReleases != releasesBefore + 1 || !prefs.englishMode || session.capsLock)
+            fprintf(stderr, "Caps Lock tap mode=%s releases=%lu expected=%lu english=%d caps=%d timer_valid=%d timer_present=%d\n",
+                mode.UTF8String, (unsigned long)gCapsReleases, (unsigned long)(releasesBefore + 1),
+                (int)prefs.englishMode, (int)session.capsLock,
+                (int)[[controller valueForKey:@"capsLockTapTimer"] isValid],
+                (int)([controller valueForKey:@"capsLockTapTimer"] != nil));
         assert(gCapsReleases == releasesBefore + 1 && prefs.englishMode && !session.capsLock);
 
         // 同一运行模式下超过阈值仍保留大写锁定，不能为了让轻点响应而把长按也切换掉。

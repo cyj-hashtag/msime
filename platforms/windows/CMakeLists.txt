@@ -1961,6 +1961,8 @@ if(WIN32)
     endif()
   endforeach()
   add_test(NAME windows-server COMMAND windows-server-smoke)
+  # 两项测试查询真实桌面的前台窗口、鼠标捕获或 UIA 提供者，不能与其他窗口夹具争用桌面。
+  set_tests_properties(windows-server windows-accessible-window-runtime PROPERTIES RUN_SERIAL TRUE)
   set_tests_properties(windows-server PROPERTIES TIMEOUT 30)
   install(TARGETS msime-client-server msime-client-watchdog msime-client-prepare
           RUNTIME DESTINATION bin)

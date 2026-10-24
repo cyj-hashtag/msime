@@ -249,6 +249,7 @@ jobs:
         run: cmake -S platforms/macos -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DMSIME_SPARKLE_ROOT="$MSIME_SPARKLE_ROOT" -DMETASEQUOIA_IME_DICTIONARY="$RUNNER_TEMP/msime-pinyin.db" -DMSIME_INPUT_SOURCE_REVISION="$(git rev-parse HEAD)"
       # An explicit job count: with the Makefile generator a bare `--parallel` becomes `make -j` with no limit, which starts every ready compile at once. Once whisper and ggml were linked into the input method (4737c9651) that was enough to run the 7 GB arm64 runner out of memory, and the step sat swapping until the 60-minute job limit cancelled it on every run that built.
       - name: Build
+        id: native-build
         if: ${{ matrix.build == 'true' }}
         run: cmake --build build --parallel "$(sysctl -n hw.logicalcpu)"
       # On the Intel runner every view SwiftUI draws through RenderBox aborted inside Metal: loading RenderBox's precompiled binary archive asks the paravirtual GPU for an architecture it does not report ("Target device architecture is nil"), and nothing of ours is on that stack. RenderBox's own switches skip the archive and the GPU, so these tests still lay out and draw there, on the CPU.
@@ -267,7 +268,7 @@ jobs:
             printf '%s\n' '{"system_input_executed":false,"blocked_by":"build failed"}' > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
           fi
       - name: Test installed Korean input source
-        if: ${{ matrix.build == 'true' && matrix.architecture == 'x86_64' }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && matrix.architecture == 'x86_64' }}
         run: bash platforms/macos/tests/input/run-korean-system-ci.sh build "$RUNNER_TEMP/korean-system-input"
       - name: Upload Korean native validation evidence
         if: ${{ always() && matrix.build == 'true' }}
