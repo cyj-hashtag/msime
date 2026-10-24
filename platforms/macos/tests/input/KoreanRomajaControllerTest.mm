@@ -6,6 +6,9 @@
 @interface KoreanTextView : NSTextView <MSIMETextClient>
 @end
 @implementation KoreanTextView
+- (void)setMarkedText:(id)text selectionRange:(NSRange)selection replacementRange:(NSRange)replacement {
+    [super setMarkedText:text selectedRange:selection replacementRange:replacement];
+}
 - (NSAttributedString *)attributedSubstringFromRange:(NSRange)range {
     if (NSMaxRange(range) > self.string.length) return nil;
     return [self.textStorage attributedSubstringFromRange:range];
