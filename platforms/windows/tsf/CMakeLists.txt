@@ -207,7 +207,7 @@ add_test(NAME msime-tsf-lifecycle-boundary COMMAND msime-tsf-lifecycle-boundary-
 add_executable(msime-tsf-caps-lock-tap-test tests/input/caps_lock_tap.cpp)
 target_compile_features(msime-tsf-caps-lock-tap-test PRIVATE cxx_std_17)
 if(MSVC)
-  target_compile_options(msime-tsf-caps-lock-tap-test PRIVATE /W4 /WX)
+  target_compile_options(msime-tsf-caps-lock-tap-test PRIVATE /W4 /WX /utf-8)
 else()
   target_compile_options(msime-tsf-caps-lock-tap-test PRIVATE -Wall -Wextra -Werror)
 endif()

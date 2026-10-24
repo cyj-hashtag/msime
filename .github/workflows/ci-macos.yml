@@ -240,6 +240,20 @@ jobs:
         run: |
           if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
           ctest --no-tests=error --test-dir build --output-on-failure --timeout 20
+      # 记录实际条件，不能把前提探测成功当作系统输入通过。
+      - name: Record Korean system-input prerequisites
+        if: ${{ matrix.build == 'true' }}
+        run: build/korean-system-input-acceptance --probe > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
+      - name: Upload Korean native validation evidence
+        if: ${{ always() && matrix.build == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: korean-native-validation-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/korean-system-input-prerequisites.json
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 7
       # A test that aborts inside a system framework prints only the assertion; the stack is in the crash report, which the runner discards with the machine.
       - name: Upload crash reports
         if: ${{ failure() && matrix.build == 'true' }}
