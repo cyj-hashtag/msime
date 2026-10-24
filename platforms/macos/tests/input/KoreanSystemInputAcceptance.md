@@ -22,6 +22,8 @@ target/macos-isolated/korean-system-input-acceptance --probe
 
 `--probe` 只报告前提，始终包含 `system_input_executed: false`。CI 的 `korean-system-input-prerequisites` 运行这一探测，不将它算作系统输入通过。
 
+独立 CI Mac 另外执行 `run-korean-system-ci.sh`：安装当前构建、注册系统输入源，分别验证缺省两套式与罗马字。`--appkit-events` 将按键放入验收应用自身的 AppKit 事件队列，经当前输入源连接独立 IMK 进程；不直接调用生产控制器或 Rust 库，也不向其他应用注入事件。报告记录事件路径、两个进程的 PID、实际文本和原生编辑框截图。注册或输入失败使 CI 失败，不将前提不足记为通过。
+
 将下面的输入法路径替换为本次构建实际安装的绝对路径，报告路径也必须为绝对路径。先保留缺省两套式并执行：
 
 ```sh

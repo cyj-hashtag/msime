@@ -252,6 +252,9 @@ jobs:
           else
             printf '%s\n' '{"system_input_executed":false,"blocked_by":"build failed"}' > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
           fi
+      - name: Test installed Korean input source
+        if: ${{ matrix.build == 'true' }}
+        run: bash platforms/macos/tests/input/run-korean-system-ci.sh build "$RUNNER_TEMP/korean-system-input"
       - name: Upload Korean native validation evidence
         if: ${{ always() && matrix.build == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -260,6 +263,7 @@ jobs:
           path: |
             ${{ runner.temp }}/korean-system-input-prerequisites.json
             build/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/korean-system-input/
           if-no-files-found: warn
           retention-days: 7
       # A test that aborts inside a system framework prints only the assertion; the stack is in the crash report, which the runner discards with the machine.

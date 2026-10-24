@@ -23,8 +23,32 @@ static NSString *SelectedSource() {
     return identifier ?: @"";
 }
 
+static BOOL AppKitEvents = NO;
+
+// 只把事件放进验收应用自己的 AppKit 队列，仍由已注册输入源经 IMK 进程处理。
+// 这条路径不向其他应用注入事件，也不需要全局事件投递权限。
+static NSString *Characters(CGKeyCode code) {
+    NSDictionary *keys = @{@0:@"a", @11:@"b", @2:@"d", @5:@"g", @4:@"h", @40:@"k",
+        @45:@"n", @12:@"q", @15:@"r", @1:@"s", @32:@"u", @9:@"v", @13:@"w", @7:@"x", @6:@"z",
+        @36:@"\r", @51:@"\x7f", @53:@"\x1b", @43:@",", @18:@"1"};
+    NSString *value = keys[@(code)];
+    if (!value) [NSException raise:@"AcceptanceFailure" format:@"未知按键代码 %u", code];
+    return value;
+}
+
 static void Key(CGKeyCode code, CGEventFlags flags = 0) {
     for (NSNumber *down in @[@YES, @NO]) {
+        if (AppKitEvents) {
+            NSString *base = Characters(code);
+            NSString *text = (flags & kCGEventFlagMaskShift) ? base.uppercaseString : base;
+            NSEvent *event = [NSEvent keyEventWithType:down.boolValue ? NSEventTypeKeyDown : NSEventTypeKeyUp
+                location:NSZeroPoint modifierFlags:(NSEventModifierFlags)flags
+                timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:NSApp.keyWindow.windowNumber
+                context:nil characters:text charactersIgnoringModifiers:base isARepeat:NO keyCode:code];
+            [NSApp postEvent:event atStart:NO];
+            Pump(0.08);
+            continue;
+        }
         CGEventRef event = CGEventCreateKeyboardEvent(nullptr, code, down.boolValue);
         if (!event) [NSException raise:@"AcceptanceFailure" format:@"无法建立键盘事件"];
         CGEventSetFlags(event, flags);
@@ -69,22 +93,26 @@ int main(int argc, const char *argv[]) {
             puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
             return 0;
         }
-        if (argc != 4 || (strcmp(argv[1], "romaja") != 0 && strcmp(argv[1], "dubeolsik") != 0)) {
-            fputs("用法：korean-system-input-acceptance <romaja|dubeolsik> <已安装输入法.app绝对路径> <报告.json绝对路径>\n", stderr);
+        if ((argc != 4 && argc != 5) || (argc == 5 && strcmp(argv[4], "--appkit-events") != 0) ||
+            (strcmp(argv[1], "romaja") != 0 && strcmp(argv[1], "dubeolsik") != 0)) {
+            fputs("用法：korean-system-input-acceptance <romaja|dubeolsik> <已安装输入法.app绝对路径> <报告.json绝对路径> [--appkit-events]\n", stderr);
             return 2;
         }
+        AppKitEvents = argc == 5;
         NSString *layout = @(argv[1]), *bundlePath = @(argv[2]), *output = @(argv[3]);
         if (!bundlePath.isAbsolutePath || !output.isAbsolutePath) return 2;
         NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
         NSString *sourceID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
         NSMutableArray *results = [NSMutableArray array];
         NSMutableDictionary *report = [@{@"layout":layout, @"bundle_path":bundlePath, @"cases":results,
+            @"event_transport":AppKitEvents ? @"appkit_event_queue" : @"cg_event_post",
+            @"bundle_revision":bundle.infoDictionary[@"MSIMEInputSourceRevision"] ?: @"",
             @"system_input_executed":@NO, @"passed":@NO} mutableCopy];
         TISInputSourceRef previous = nullptr;
         NSWindow *window = nil;
         int status = 1;
         @try {
-            if (!CGPreflightPostEventAccess())
+            if (!AppKitEvents && !CGPreflightPostEventAccess())
                 [NSException raise:@"AcceptancePrerequisite" format:@"当前进程没有系统按键投递权限；未请求或修改权限，未执行验收"];
             NSURL *registered = bundle.bundleIdentifier
                 ? [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:bundle.bundleIdentifier] : nil;
@@ -122,6 +150,18 @@ int main(int argc, const char *argv[]) {
             Pump(0.5);
             if (selected != noErr || ![SelectedSource() isEqual:sourceID])
                 [NSException raise:@"AcceptancePrerequisite" format:@"窗口激活后系统恢复了其他输入源；请先在此窗口选择水杉韩语"];
+            NSArray<NSRunningApplication *> *servers = [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle.bundleIdentifier];
+            NSRunningApplication *server = nil;
+            for (NSRunningApplication *application in servers) {
+                if (application.processIdentifier != getpid() &&
+                    [application.bundleURL.URLByResolvingSymlinksInPath.path isEqual:bundle.bundleURL.URLByResolvingSymlinksInPath.path]) {
+                    server = application;
+                    break;
+                }
+            }
+            if (!server) [NSException raise:@"AcceptancePrerequisite" format:@"本次已安装输入法没有独立的运行进程"];
+            report[@"input_method_pid"] = @(server.processIdentifier);
+            report[@"client_pid"] = @(getpid());
             report[@"system_input_executed"] = @YES;
             BOOL romaja = [layout isEqual:@"romaja"];
             Type(romaja ? @"hang" : @"gks");
@@ -152,6 +192,13 @@ int main(int argc, const char *argv[]) {
             Expect(results, second, @"한국", YES, @"新输入框独立组字"); Key(36);
             Expect(results, second, @"한국\n", NO, @"新输入框提交");
             Expect(results, first, @"한", NO, @"原输入框不被改写");
+            NSBitmapImageRep *bitmap = [window.contentView bitmapImageRepForCachingDisplayInRect:window.contentView.bounds];
+            [window.contentView cacheDisplayInRect:window.contentView.bounds toBitmapImageRep:bitmap];
+            NSString *imagePath = [[output stringByDeletingPathExtension] stringByAppendingPathExtension:@"png"];
+            NSData *image = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            if (![image writeToFile:imagePath atomically:YES])
+                [NSException raise:@"AcceptanceFailure" format:@"无法保存原生编辑框截图"];
+            report[@"editor_image"] = imagePath;
             report[@"passed"] = @YES;
             status = 0;
         } @catch (NSException *exception) {
