@@ -58,6 +58,7 @@ int main() {
         for (NSNumber *romaja in @[@NO, @YES]) {
             NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
             NSMutableDictionary *preferences = [@{@"scheme":@"korean", @"default_ime_mode":@"chinese",
+                @"candidate_page_size":@5, @"chinese_punctuation":@YES,
                 @"learning":@NO, @"cloud_candidates":@NO, @"candidate_translations":@NO,
                 @"floating_toolbar":@NO, @"tsf_preedit_style":@"empty"} mutableCopy];
             if (romaja.boolValue) preferences[@"korean"] = @{@"layout":@"romaja"};
