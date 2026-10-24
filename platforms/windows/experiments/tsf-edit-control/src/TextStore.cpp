@@ -65,7 +65,7 @@ STDAPI_(ULONG) CTextStore::Release()
 //
 //----------------------------------------------------------------------------
 
-STDAPI CTextStore::AdviseSink(REFIID riid, IUnknown *punk, DWORD )
+STDAPI CTextStore::AdviseSink(REFIID riid, IUnknown *punk, DWORD)
 {
 
     if (!IsEqualGUID(riid, IID_ITextStoreACPSink))
@@ -139,7 +139,7 @@ STDAPI CTextStore::QueryInsert(LONG acpInsertStart, LONG acpInsertEnd, ULONG cch
         acpInsertEnd > static_cast<LONG>(_pEditor->GetTextLength()) ||
         cch > CTextContainer::kMaxTextUnits -
                    (_pEditor->GetTextLength() - static_cast<ULONG>(acpInsertEnd - acpInsertStart)) ||
-        cch > static_cast<ULONG>((std::numeric_limits<LONG>::max)() - acpInsertStart))
+        cch > static_cast<ULONG>(std::numeric_limits<LONG>::max() - acpInsertStart))
         return E_INVALIDARG;
 
     *pacpResultStart = acpInsertStart;
@@ -263,7 +263,7 @@ STDAPI CTextStore::SetText(DWORD, LONG acpStart, LONG acpEnd, __in_ecount(cch) c
 
     const ULONG removed = static_cast<ULONG>(acpEnd - acpStart);
     if (cch > CTextContainer::kMaxTextUnits - (_pEditor->GetTextLength() - removed) ||
-        cch > static_cast<ULONG>((std::numeric_limits<LONG>::max)() - acpStart))
+        cch > static_cast<ULONG>(std::numeric_limits<LONG>::max() - acpStart))
         return E_INVALIDARG;
 
     // Check the composition status
@@ -307,7 +307,7 @@ STDAPI CTextStore::GetFormattedText(LONG, LONG, IDataObject **)
 //
 //----------------------------------------------------------------------------
 
-STDAPI CTextStore::GetEmbedded(LONG, REFGUID , REFIID , IUnknown **)
+STDAPI CTextStore::GetEmbedded(LONG, REFGUID, REFIID, IUnknown **)
 {
     return E_NOTIMPL;
 }
@@ -345,7 +345,7 @@ STDAPI CTextStore::RequestSupportedAttrs(DWORD, ULONG cFilterAttrs, const TS_ATT
 //----------------------------------------------------------------------------
 
 STDAPI CTextStore::RequestAttrsAtPosition(LONG, ULONG cFilterAttrs, const TS_ATTRID *paFilterAttrs,
-                                          DWORD )
+                                          DWORD)
 {
     PrepareAttributes(cFilterAttrs, paFilterAttrs);
     if (!_nAttrVals)
@@ -360,7 +360,7 @@ STDAPI CTextStore::RequestAttrsAtPosition(LONG, ULONG cFilterAttrs, const TS_ATT
 //----------------------------------------------------------------------------
 
 STDAPI CTextStore::RequestAttrsTransitioningAtPosition(LONG, ULONG, const TS_ATTRID *,
-                                                       DWORD )
+                                                       DWORD)
 {
     return E_NOTIMPL;
 }
@@ -528,7 +528,7 @@ STDAPI CTextStore::InsertTextAtSelection(DWORD dwFlags, __in_ecount(cch) const W
     const ULONG removed = static_cast<ULONG>(acpEnd - acpStart);
 
     if ((cch && !pchText) || cch > CTextContainer::kMaxTextUnits - (_pEditor->GetTextLength() - removed) ||
-        cch > static_cast<ULONG>((std::numeric_limits<LONG>::max)() - acpStart))
+        cch > static_cast<ULONG>(std::numeric_limits<LONG>::max() - acpStart))
         return E_INVALIDARG;
 
     if (dwFlags & TS_IAS_QUERYONLY)
@@ -589,7 +589,7 @@ STDAPI CTextStore::InsertEmbeddedAtSelection(DWORD, IDataObject *, LONG *, LONG 
 
 STDAPI CTextStore::AdviseMouseSink(ITfRangeACP *range, ITfMouseSink *pSink, DWORD *pdwCookie)
 {
-    DWORD dwCookie = 0;
+    DWORD dwCookie = 1;
     if (!_prgMouseSinks)
     {
         _prgMouseSinks = (MOUSESINK *)LocalAlloc(LPTR, sizeof(MOUSESINK));
@@ -625,8 +625,6 @@ STDAPI CTextStore::AdviseMouseSink(ITfRangeACP *range, ITfMouseSink *pSink, DWOR
         }
     }
 
-    if (!dwCookie)
-        return E_UNEXPECTED;
     _prgMouseSinks[dwCookie - 1].pRange = range;
     _prgMouseSinks[dwCookie - 1].pMouseSink = pSink;
     _prgMouseSinks[dwCookie - 1].pRange->AddRef();
