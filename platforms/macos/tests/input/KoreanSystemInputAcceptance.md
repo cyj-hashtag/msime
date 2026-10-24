@@ -26,7 +26,7 @@ target/macos-isolated/korean-system-input-acceptance --probe
 
 汉字候选打开时还读取该输入法进程的可见窗口几何，检查窗口靠近原生编辑框光标（48 点邻域）且位于编辑器前方，再按数字选字。报告保存光标与窗口矩形；不依赖屏幕录制权限，不读取其他应用的窗口标题或图像。
 
-验收先创建前台窗口、聚焦编辑框并激活其 `NSTextInputContext`，再选择输入源；TIS 选择失败时尝试 AppKit 的 `selectInputSource:`。报告同时保存 TIS 状态、实际全局输入源与文本上下文输入源，实际输入源及全部文字断言仍须通过，不能将发出选择请求当作成功。
+验收先创建前台窗口、聚焦编辑框并激活其 `NSTextInputContext`，再选择输入源；TIS 选择失败时设置 AppKit 的 `selectedKeyboardInputSource` 属性。报告同时保存 TIS 状态、实际全局输入源与文本上下文输入源，实际输入源及全部文字断言仍须通过，不能将发出选择请求当作成功。
 
 已安装输入源步骤在 macOS 15 Intel CI 中执行；涉及此入口的 PR 必须启动该构建，不能因普通 PR 的 Intel 默认省略而跳过。macOS 26 arm64 继续执行原生 CTest 和前提探测，其新模式启用限制不记为系统验收通过。
 

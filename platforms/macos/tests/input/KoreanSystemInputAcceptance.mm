@@ -260,8 +260,8 @@ int main(int argc, const char *argv[]) {
             report[@"tis_select_status"] = @(selected);
             report[@"selection_transport"] = @"TISSelectInputSource";
             if (selected != noErr) {
-                [first.inputContext selectInputSource:sourceID];
-                report[@"selection_transport"] = @"NSTextInputContext.selectInputSource";
+                first.inputContext.selectedKeyboardInputSource = sourceID;
+                report[@"selection_transport"] = @"NSTextInputContext.selectedKeyboardInputSource";
             }
             Pump(0.5);
             report[@"selected_input_source"] = SelectedSource();
