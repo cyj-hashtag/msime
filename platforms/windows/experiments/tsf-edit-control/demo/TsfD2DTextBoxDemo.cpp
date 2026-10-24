@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <string>
 #include <cwchar>
+#include "../../../compat/WindowsDpi.h"
 
 #include "TsfD2DTextBox.h"
 #include "TsfTextServices.h"
@@ -191,7 +192,7 @@ LRESULT CALLBACK DemoWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+    msime::windows::compat::process_context(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     TsfD2DTextBox::RegisterClass(hInstance);

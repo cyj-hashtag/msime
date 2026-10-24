@@ -380,7 +380,7 @@ function AccountDetailsPage({
     setUser(value.user);
     setName(value.user.displayName);
   };
-  const { normalizedName, validName, rename } = useAccountRename({
+  const { normalizedName, validName, rename, editorState } = useAccountRename({
     client,
     name,
     mounted,
@@ -613,9 +613,6 @@ function AccountDetailsPage({
       void perform(() => loadProfile(generation));
       onLoginComplete?.();
     };
-    const communityRows = Boolean(
-      onOpenLocalDesigns || (user && (openPublishedSkins || onOpenCommunity)),
-    );
     const downloadPage = Boolean(desktopDownloadUrl && (onOpenUrl || copyText));
     const openDownload = downloadPage ? () => openSubpage("download") : onOpenDesktopDownload;
     const icon = (name: FluentIconName) => <FluentIcon name={name} size={18} />;
@@ -651,60 +648,6 @@ function AccountDetailsPage({
           <FluentIcon name="chevron_right" size={20} className={account.meCardChevron} />
         </button>
         {appIcon && <AppIconSettingsCard client={appIcon} />}
-        {communityRows && (
-          <MeGroup title="社区作品">
-            {onOpenLocalDesigns && (
-              <NavRow
-                variant="me"
-                icon={icon("pen")}
-                title="我的设计"
-                disabled={busy}
-                onClick={onOpenLocalDesigns}
-              />
-            )}
-            {user && openPublishedSkins && (
-              <NavRow
-                variant="me"
-                icon={icon("people_community")}
-                title="我发布的皮肤"
-                disabled={busy}
-                onClick={openPublishedSkins}
-              />
-            )}
-            {user && onOpenCommunity && (
-              <>
-                <NavRow
-                  variant="me"
-                  icon={icon("book")}
-                  title="我发布的词库"
-                  disabled={busy}
-                  onClick={() => onOpenCommunity("published-dictionary")}
-                />
-                <NavRow
-                  variant="me"
-                  icon={icon("text_quote")}
-                  title="我发布的回复模板"
-                  disabled={busy}
-                  onClick={() => onOpenCommunity("published-reply")}
-                />
-                <NavRow
-                  variant="me"
-                  icon={icon("star")}
-                  title="收藏的词库"
-                  disabled={busy}
-                  onClick={() => onOpenCommunity("saved-dictionary")}
-                />
-                <NavRow
-                  variant="me"
-                  icon={icon("heart")}
-                  title="收藏的回复模板"
-                  disabled={busy}
-                  onClick={() => onOpenCommunity("saved-reply")}
-                />
-              </>
-            )}
-          </MeGroup>
-        )}
         {/* 「绑定 QQ 群助手」：/bind 拿到的码多半就在这台手机的 QQ 里。 */}
         {user && client.qqLinks && <QqLinkCard client={client.qqLinks} userId={user.id} />}
         {(appTheme || onOpenPage || onOpenUrl) && (
@@ -993,7 +936,7 @@ function AccountDetailsPage({
               ) : (
                 <AccountAvatar user={user} load={client.avatar} size="small" />
               )}
-              <strong>{name.trim() || "你的昵称"}</strong>
+              <strong>{normalizedName || "你的昵称"}</strong>
               {user.avatarUploaded && client.removeAvatar && (
                 <ActionButton
                   action={removeAvatar}
@@ -1007,6 +950,7 @@ function AccountDetailsPage({
               <p className={account.muted}>点头像可更换，支持 1 MiB 以内的 PNG 或 JPEG。</p>
             )}
             <AccountNicknameEditor
+              {...editorState}
               variant="desktop"
               value={name}
               disabled={busy}
@@ -1027,7 +971,7 @@ function AccountDetailsPage({
                   setEditingProfile(false);
                 }}
                 className={account.primary}
-                disabled={busy || normalizedName === user.displayName}
+                disabled={busy || !validName || normalizedName === user.displayName}
                 label="保存修改"
               />
               <ActionButton
