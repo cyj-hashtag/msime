@@ -63,7 +63,7 @@ PY
   sleep 2
   python3 - "$build/korean-system-input-acceptance" "$layout" "$installed" "$reports/$layout.json" <<'PY'
 import subprocess, sys
-subprocess.run([*sys.argv[1:], "--appkit-events"], check=True, timeout=90)
+subprocess.run([*sys.argv[1:], "--appkit-events", "--primary-source"], check=True, timeout=90)
 PY
   kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true

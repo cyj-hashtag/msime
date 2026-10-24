@@ -24,6 +24,8 @@ target/macos-isolated/korean-system-input-acceptance --probe
 
 独立 CI Mac 另外执行 `run-korean-system-ci.sh`：安装当前构建、注册系统输入源，分别验证缺省两套式与罗马字。`--appkit-events` 将按键放入验收应用自身的 AppKit 事件队列，经当前输入源连接独立 IMK 进程；不直接调用生产控制器或 Rust 库，也不向其他应用注入事件。报告记录事件路径、两个进程的 PID、实际文本和原生编辑框截图。注册或输入失败使 CI 失败，不将前提不足记为通过。
 
+CI 显式传入 `--primary-source`，选择已默认启用的 `.Hans` 主输入源，偏好仍为 `scheme: korean`。这是生产控制器在可选韩语菜单入口未添加时的正常回退路径（`MSIMESchemeForReportedInputMode` 保留该方案），仍须通过独立 IMK 进程完成实际输入。新系统的 TIS 启用调用可能返回成功但模式仍 disabled；`enabled-sources.json` 单独记录实际状态，不能将主输入源验收当作韩语菜单入口已启用。手动入口省略此参数，继续要求已添加的 `.Korean` 输入源。
+
 将下面的输入法路径替换为本次构建实际安装的绝对路径，报告路径也必须为绝对路径。先保留缺省两套式并执行：
 
 ```sh

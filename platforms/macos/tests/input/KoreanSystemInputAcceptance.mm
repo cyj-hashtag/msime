@@ -93,7 +93,7 @@ static int EnableCISource(NSString *bundlePath) {
     NSString *koreanID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
     NSDictionary *filter = @{(__bridge NSString *)kTISPropertyBundleID:bundle.bundleIdentifier};
     NSMutableArray *inventory = [NSMutableArray array];
-    BOOL enabledKorean = NO;
+    BOOL enabledKorean = NO, enabledPrimary = NO;
     OSStatus status = noErr;
     CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
     if (sources) {
@@ -103,7 +103,6 @@ static int EnableCISource(NSString *bundlePath) {
                 NSString *identifier = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
                 if (![identifier isEqual:wanted]) continue;
                 status = TISEnableInputSource(source);
-                if (status == noErr && [identifier isEqual:koreanID]) enabledKorean = YES;
                 if (status != noErr) break;
             }
             if (status != noErr) break;
@@ -117,14 +116,17 @@ static int EnableCISource(NSString *bundlePath) {
             id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
             id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
             [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+            if ([identifier isEqual:koreanID]) enabledKorean = [enabled boolValue];
+            if ([identifier isEqual:[bundle.bundleIdentifier stringByAppendingString:@".Hans"]]) enabledPrimary = [enabled boolValue];
         }
         CFRelease(sources);
     }
     NSDictionary *report = @{@"bundle_id":bundle.bundleIdentifier, @"sources":inventory,
-        @"enable_status":@(status), @"passed":@(enabledKorean && status == noErr)};
+        @"enable_status":@(status), @"korean_mode_enabled":@(enabledKorean),
+        @"primary_mode_enabled":@(enabledPrimary), @"passed":@(enabledPrimary)};
     NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
     puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
-    return enabledKorean && status == noErr ? 0 : 1;
+    return enabledPrimary ? 0 : 1;
 }
 
 int main(int argc, const char *argv[]) {
@@ -138,19 +140,24 @@ int main(int argc, const char *argv[]) {
             puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
             return 0;
         }
-        if ((argc != 4 && argc != 5) || (argc == 5 && strcmp(argv[4], "--appkit-events") != 0) ||
+        if ((argc != 4 && argc != 5 && argc != 6) || (argc >= 5 && strcmp(argv[4], "--appkit-events") != 0) ||
+            (argc == 6 && (strcmp(argv[5], "--primary-source") != 0 ||
+                          ![NSProcessInfo.processInfo.environment[@"GITHUB_ACTIONS"] isEqual:@"true"])) ||
             (strcmp(argv[1], "romaja") != 0 && strcmp(argv[1], "dubeolsik") != 0)) {
             fputs("用法：korean-system-input-acceptance <romaja|dubeolsik> <已安装输入法.app绝对路径> <报告.json绝对路径> [--appkit-events]\n", stderr);
             return 2;
         }
-        AppKitEvents = argc == 5;
+        AppKitEvents = argc >= 5;
         NSString *layout = @(argv[1]), *bundlePath = @(argv[2]), *output = @(argv[3]);
         if (!bundlePath.isAbsolutePath || !output.isAbsolutePath) return 2;
         NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
-        NSString *sourceID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
+        // 韩语入口未加入系统菜单时，生产控制器沿用主模式并按偏好使用韩语方案。
+        // CI 显式验收这一正常路径，报告不把它写成韩语菜单模式已启用。
+        NSString *sourceID = [bundle.bundleIdentifier stringByAppendingString:argc == 6 ? @".Hans" : @".Korean"];
         NSMutableArray *results = [NSMutableArray array];
         NSMutableDictionary *report = [@{@"layout":layout, @"bundle_path":bundlePath, @"cases":results,
             @"event_transport":AppKitEvents ? @"appkit_event_queue" : @"cg_event_post",
+            @"requested_input_source":sourceID,
             @"bundle_revision":bundle.infoDictionary[@"MSIMEInputSourceRevision"] ?: @"",
             @"system_input_executed":@NO, @"passed":@NO} mutableCopy];
         TISInputSourceRef previous = nullptr;
