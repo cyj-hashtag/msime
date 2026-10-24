@@ -1,6 +1,7 @@
 #import "../../src/input/InputController.mm"
 #import "../settings/TestPreferenceSuite.h"
 #include <cassert>
+#import <objc/runtime.h>
 
 // 使用 AppKit 自己的 marked range、文档和光标；不以桩会话或字符串拼接模拟引擎。
 @interface KoreanTextView : NSTextView <MSIMETextClient>
@@ -19,6 +20,14 @@
     return @{};
 }
 @end
+
+// 单进程夹具没有 IMK 的远端客户端连接；只隔离框架最后一次 IPC，记录生产控制器确实调用它。
+// Rust 会话、marked text、候选和失焦提交仍走生产实现；系统跨进程投递须另行验收。
+static NSUInteger BaseDeactivations;
+static void RecordBaseDeactivation(id controller, SEL selector, id sender) {
+    (void)controller; (void)selector; (void)sender;
+    ++BaseDeactivations;
+}
 
 static NSDictionary *KoreanOptions;
 @interface KoreanController : MSIMEInputController
@@ -138,7 +147,13 @@ int main() {
 
             // 失焦把当前韩文留在原文档；另一个编辑框不得继承这次组字。
             Type(controller, client, romaja.boolValue ? @"han" : @"gks");
+            Method base = class_getInstanceMethod(IMKInputController.class, @selector(deactivateServer:));
+            assert(base);
+            BaseDeactivations = 0;
+            IMP original = method_setImplementation(base, (IMP)RecordBaseDeactivation);
             [controller deactivateServer:client];
+            method_setImplementation(base, original);
+            assert(BaseDeactivations == 1);
             assert(!client.hasMarkedText && [client.string isEqual:@"한"]);
             KoreanTextView *second = [[KoreanTextView alloc] initWithFrame:client.frame];
             [controller setValue:second forKey:@"activeClient"];
