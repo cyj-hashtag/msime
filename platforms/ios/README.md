@@ -334,9 +334,10 @@ xcodebuild -workspace platforms/ios/MSIMEClient.xcworkspace -scheme MSIMEClientU
 设备须解锁，并已启用水杉系统键盘。用例在独立测试编辑器中只输入合成拼音，不使用设备上的浏览器或备忘录。
 
 iOS 27 模拟器的系统键盘验收需要启用模拟器 ad-hoc 签名，并在系统「设置 → 通用 → 键盘 → 键盘」中添加水杉、允许完全访问。`addKeyboardInSettingsIfNeeded` 会通过设置界面完成登记与权限确认，再由 `activeSystemKeyboard` 切换到产品扩展；已加载扩展显示共享目录错误时明确失败，不能计作未启用键盘而跳过。只写 `AppleKeyboards`、调用 `pluginkit` 或使用 `App-prefs` 深链均不能替代设置界面的登记流程。模拟器的 App Group 权限由 Xcode 的 `Entitlements-Simulated.plist` 注入可执行文件，不能只看 `codesign` 打印的字典判断；`CODE_SIGNING_ALLOWED=NO` 不适用于这组系统入口验收。
+
 `testFourteenKeyShuangpinProfilesCommitIntoTheSystemEditor` 从原生设置选择双拼 14 键，在独立编辑器内依次切换小鹤、自然码、微软、首道并点按合成组码，选择读音行的 `readingSpelling_ni` 后上屏「你好」，检查既有正文、微软分号读屏和数字页往返，结束恢复原方案和布局。iOS 27 arm64 专用模拟器该项 **1 通过、0 跳过、0 失败**（221 秒），四张方案截图已检查，未在实体设备验收。
 
-原有整套 UI 基线为 **39 执行、2 跳过、0 失败**（917 秒）；本次只执行上述新增专项，没有重跑整套 UI，不能据此更新其他用例的通过或跳过状态。
+原有整套 UI 基线为 **39 执行、2 跳过、0 失败**（917 秒），两项系统键盘用例当时跳过；新增或单项验收的结果单独记录，不据此更新整套 UI 的通过与跳过数量。
 
 `testCandidatePanelAfterHostSchemeChanges` 于 2026-10-24 在 iOS 27 arm64 模拟器的真实系统扩展入口通过（410.216 秒，1 通过、0 失败、0 跳过）。它保留独立编辑器与未完成组字，经产品设置切换双拼、全拼、九键和十四键，三轮共 12 次；每次展开、收起、再次展开并精确追加选中的候选。24 张展开与上屏截图已查看。此结果不覆盖报告人实体 iPhone 的低概率现场，细节见[候选列表与隐藏布局笔记](../../.agents/notes/implemented/bug-fix/2026-10-19-ios-large-candidate-panel.md)。
 

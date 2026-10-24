@@ -5,7 +5,6 @@ int main() {
   using msime::tsf::path_to_utf8;
   assert(path_to_utf8({}).empty());
   assert(path_to_utf8(std::filesystem::path("fixture")) == "fixture");
-  // C++17 的窄字符路径构造走本机代码页；C++20 的 char8_t 构造才明确表示 UTF-8。
 #if defined(__cpp_char8_t)
   const auto path = std::filesystem::path(u8"fixture-\u8def\u5f84-\U0001f332");
 #else

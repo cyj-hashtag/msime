@@ -18,7 +18,6 @@ void check(bool condition, const char *what) {
 }
 
 std::string read(const std::string &path) {
-    // 按文本读取源码，让 Windows 的 CRLF 与接线断言中的换行一致。
     std::ifstream file(path);
     if (!file) {
         std::fprintf(stderr, "FAIL: cannot open %s\n", path.c_str());
