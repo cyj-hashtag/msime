@@ -284,6 +284,11 @@ jobs:
         run: |
           if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
           python3 platforms/macos/tests/run_native_ci.py build "$RUNNER_TEMP/native-test-diagnostics"
+      - name: Verify settings appearance stability
+        if: ${{ matrix.build == 'true' && matrix.architecture == 'arm64' }}
+        run: |
+          cp build/Testing/Temporary/LastTest.log "$RUNNER_TEMP/mac-native-full-LastTest.log"
+          ctest --no-tests=error --test-dir build -R '^settings-glass$' --repeat until-fail:10 --output-on-failure --timeout 20
       # 记录实际条件，不能把前提探测成功当作系统输入通过。
       - name: Record Korean system-input prerequisites
         if: ${{ always() && matrix.build == 'true' }}
@@ -305,6 +310,7 @@ jobs:
           path: |
             ${{ runner.temp }}/korean-system-input-prerequisites.json
             build/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/mac-native-full-LastTest.log
             ${{ runner.temp }}/native-test-diagnostics/
             ${{ runner.temp }}/korean-system-input/
           if-no-files-found: warn

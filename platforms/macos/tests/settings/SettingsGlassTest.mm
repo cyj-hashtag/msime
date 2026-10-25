@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #include <cassert>
+#include <cstdio>
 #include "../../../../apps/desktop/src-tauri/macos/settings_glass.mm"
 
 // 合成焦点和应用状态，避免测试抢走真实桌面的焦点。
@@ -20,12 +21,22 @@ static BOOL TestApplicationActive(id application, SEL selector) {
 
 static void CheckAppearance(WKWebView *webview, NSWindow *window, NSString *mode, NSAppearanceName expected) {
     NSString *script = [NSString stringWithFormat:@"document.documentElement.dataset.settingsAppearance = '%@'", mode];
-    [webview evaluateJavaScript:script completionHandler:nil];
+    __block BOOL evaluated = NO;
+    __block NSError *evaluationError = nil;
+    [webview evaluateJavaScript:script completionHandler:^(id value, NSError *error) {
+        (void)value;
+        evaluationError = error;
+        evaluated = YES;
+    }];
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8];
     while (deadline.timeIntervalSinceNow > 0) {
         [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        if (expected ? [window.appearance.name isEqual:expected] : window.appearance == nil) return;
+        if (evaluated && !evaluationError && (expected ? [window.appearance.name isEqual:expected] : window.appearance == nil)) return;
     }
+    fprintf(stderr, "settings appearance mode=%s expected=%s actual=%s evaluated=%d loading=%d error=%s\n",
+        mode.UTF8String, expected ? expected.UTF8String : "system",
+        window.appearance ? window.appearance.name.UTF8String : "system",
+        (int)evaluated, (int)webview.loading, evaluationError ? evaluationError.localizedDescription.UTF8String : "none");
     assert(false && "设置窗口未同步文档外观偏好");
 }
 
@@ -90,9 +101,10 @@ static void TestSettingsGlass() {
             __block BOOL matched = NO;
             NSString *expected = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceTransparency ? @"false" : @"true";
             while (!matched && deadline.timeIntervalSinceNow > 0) {
-                [webview evaluateJavaScript:@"document.documentElement.dataset.macosLiquidGlass + '/' + document.documentElement.dataset.macosSystemControls"
+                // 初始 about:blank 也可能已被 refresh 写入相同能力值；须等本次合成文档真正加载。
+                [webview evaluateJavaScript:@"document.body?.textContent === 'synthetic settings' ? document.documentElement.dataset.macosLiquidGlass + '/' + document.documentElement.dataset.macosSystemControls : null"
                     completionHandler:^(id value, NSError *error) {
-                        if (!error && [value isEqual:[expected stringByAppendingString:@"/true"]]) matched = YES;
+                        if (!error && !webview.loading && [value isEqual:[expected stringByAppendingString:@"/true"]]) matched = YES;
                     }];
                 [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
             }
@@ -100,15 +112,16 @@ static void TestSettingsGlass() {
             // 减少透明度可以移除玻璃，系统控件仍由 WebKit 绘制。
             [controller updateEnabled:NO];
             deadline = [NSDate dateWithTimeIntervalSinceNow:8];
-            matched = NO;
-            while (!matched && deadline.timeIntervalSinceNow > 0) {
+            // 各阶段独立保存结果，前一阶段迟到的 WebKit 回调不能满足下一阶段。
+            __block BOOL controlsMatched = NO;
+            while (!controlsMatched && deadline.timeIntervalSinceNow > 0) {
                 [webview evaluateJavaScript:@"document.documentElement.dataset.macosLiquidGlass + '/' + document.documentElement.dataset.macosSystemControls + '/' + ('switch' in document.createElement('input'))"
                     completionHandler:^(id value, NSError *error) {
-                        if (!error && [value isEqual:@"false/true/true"]) matched = YES;
+                        if (!error && !webview.loading && [value isEqual:@"false/true/true"]) controlsMatched = YES;
                     }];
                 [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
             }
-            assert(matched);
+            assert(controlsMatched);
             // 明暗必须到达原生材质；系统模式清除覆盖，不能锁在刚才的深色。
             CheckAppearance(webview, window, @"dark", NSAppearanceNameDarkAqua);
             CheckAppearance(webview, window, @"light", NSAppearanceNameAqua);
@@ -126,10 +139,15 @@ static void TestSettingsGlass() {
             assert([controller.glass.effectiveAppearance.name isEqual:NSAppearanceNameDarkAqua]);
             [webview loadHTMLString:@"<!doctype html><html><body>synthetic reload</body></html>" baseURL:nil];
             deadline = [NSDate dateWithTimeIntervalSinceNow:8];
-            while (window.appearance != nil && deadline.timeIntervalSinceNow > 0) {
+            __block BOOL reloaded = NO;
+            while ((!reloaded || window.appearance != nil) && deadline.timeIntervalSinceNow > 0) {
+                [webview evaluateJavaScript:@"document.body?.textContent === 'synthetic reload'"
+                    completionHandler:^(id value, NSError *error) {
+                        if (!error && !webview.loading && [value isEqual:@YES]) reloaded = YES;
+                    }];
                 [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
             }
-            assert(window.appearance == nil);
+            assert(reloaded && window.appearance == nil);
         }
     }
 }

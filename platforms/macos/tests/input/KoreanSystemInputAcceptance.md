@@ -32,7 +32,7 @@ target/macos-isolated/korean-system-input-acceptance.app/Contents/MacOS/korean-s
 
 报告另保存原输入源的 TIS 对照返回码，以及输入上下文实际提供的本 bundle 输入源。选源最多等待五秒；若活动窗口的两条选源路径仍停留在 ABC/US，结果为前提失败，必须在能实际选择本次已安装输入源的 Mac 登录会话中验收，不能按编译或控制器测试结果放行。
 
-已安装输入源步骤在 macOS 15 Intel CI 中执行；涉及此入口的 PR 必须启动该构建，不能因普通 PR 的 Intel 默认省略而跳过。macOS 15 arm64 继续执行原生 CTest 和前提探测，不记为系统输入验收通过。
+已安装输入源步骤在 macOS 15 Intel CI 中执行；涉及此入口的 PR 必须启动该构建，不能因普通 PR 的 Intel 默认省略而跳过。arm64 在 macOS 26 宿主继续执行原生 CTest 和前提探测，不记为系统输入验收通过；其检查名称因分支保护沿用 `macOS 15 arm64`。
 
 `enabled-sources.json` 的 `passed` 只在 `.Korean` 实际启用时为真。API 添加未生效时，CI 的 `SourceSetup` XCTest UI 夹具打开系统设置，通过韩语分类添加 `Metasequoia · KO`，再用同一客户端复核真实状态。夹具只使用镜像已有的 UI 测试自动化会话，不改 TCC、信任设置或系统输入源数据库。固定的 Xcode 派生目录在现有 CI 构建目录下的 `input-source-setup`，结果与界面树保存在 `input-source-setup.xcresult` 和 `.log`。系统设置仍不列出该模式或最终无法选择时继续失败，需要可实际选源的登录会话；不将注册调用或 UI 点击返回成功当成系统验收通过。
 
