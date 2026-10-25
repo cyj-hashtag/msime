@@ -71,9 +71,12 @@ static void Type(NSString *text) {
 
 static void Expect(NSMutableArray *results, NSTextView *view, NSString *text, BOOL marked, NSString *name) {
     Pump(0.15);
-    NSDictionary *result = @{@"case":name, @"expected":text, @"actual":view.string,
-        @"marked":@(view.hasMarkedText), @"expected_marked":@(marked), @"input_source":SelectedSource(),
-        @"passed":@([view.string isEqual:text] && view.hasMarkedText == marked)};
+    // NSTextView 的底层字符串会继续变化，证据与断言必须使用同一份不可变快照。
+    NSString *actual = [view.string copy];
+    const BOOL actualMarked = view.hasMarkedText;
+    NSDictionary *result = @{@"case":name, @"expected":text, @"actual":actual,
+        @"marked":@(actualMarked), @"expected_marked":@(marked), @"input_source":SelectedSource(),
+        @"passed":@([actual isEqual:text] && actualMarked == marked)};
     [results addObject:result];
     if (![result[@"passed"] boolValue]) [NSException raise:@"AcceptanceFailure" format:@"%@：%@", name, result];
 }
