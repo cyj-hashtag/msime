@@ -20,6 +20,7 @@ import { CandidateGlossPolicy } from './candidate/CandidateGlossPolicy';
 import { CandidatePresentationPolicy } from './candidate/CandidatePresentationPolicy';
 import { KeyboardLayoutDragPolicy } from './input/KeyboardLayoutDragPolicy';
 import { ExpandedCandidateCell, ExpandedCandidateLayout } from './candidate/ExpandedCandidateLayout';
+import { CandidatePanelSelectionPolicy } from './candidate/CandidatePanelSelectionPolicy';
 import { ShuangpinKeyHintPolicy } from './input/ShuangpinKeyHintPolicy';
 import { ReturnDispatch, ReturnKeyAction } from './input/ReturnKeyAction';
 import { InputDiagnosticPolicy } from './input/InputDiagnosticPolicy';
@@ -62,6 +63,7 @@ import { NineKeyAction, NineKeyActionKind, NineKeyLayout, NineKey } from './inpu
 import { NineKeyShuangpinFace, nineKeyShuangpinFace, nineKeyShuangpinLabel } from './input/NineKeyShuangpinKeypad';
 import { FourteenKey, FourteenKeyLayout } from './input/FourteenKeyLayout';
 import { EighteenKeyLayout } from './input/EighteenKeyLayout';
+import { EighteenKeySwipeGesture, EighteenKeyTap } from './input/EighteenKeySwipePolicy';
 import { LayerCharacterRoute, LayerKey, LayerKeyKind, NumberSymbolLayout } from './input/NumberSymbolLayout';
 import { ChineseSymbolFaces } from './input/ChineseSymbolFaces';
 import {
@@ -172,6 +174,8 @@ interface KeyOptions {
    * 字母键的小写字母。设了它，键面和读屏文字在绘制时按当前大小写现算，`face` 和 `label` 不再用：自动大写在每次文字变化后异步切换大小写，若把大小写放进 `ForEach` 的键标识，每次切换都会重建全部字母键，手指正按着的那个键也被换掉，这次按键就丢了。
    */
   letter?: string;
+  /** 双拼 18 键上这一键的字母（`FourteenKey.letters`）。设了它，横滑选中这一键的某个字母时键面在绘制时改画那个字母，与 `letter` 同理不进 `ForEach` 的键标识，正按着的键不会被重建。 */
+  swipeLetters?: string;
   size: number;
   /** 用操作色填充：2in1 上按住的 Shift，或有组合串时的回车键（在触屏键盘的设计行上则始终填充）。 */
   emphasized: boolean;
@@ -487,6 +491,8 @@ struct KeyboardView {
   /** 光标前打到 `xxx@` 时给出的邮箱后缀，先于英文补全显示；没有时为空。 */
   @State @Watch('syncStripHeight') emailSuffixes: string[] = [];
   @State shuangpinProfile: string = 'xiaohe';
+  /** 双拼触屏字母组码布局；26/14/18 键独立于当前双拼方案保存。 */
+  @State shuangpinLayout: string = 'twenty_six_key';
   @State localMode: string = 'none';
   @State @Watch('syncStripHeight') diagnostic: string = '';
   @State punctuation: boolean = false;
@@ -761,6 +767,11 @@ struct KeyboardView {
   private letterHints: LetterHintGesture = new LetterHintGesture();
   /** 每个被跟踪手指的长按计时器。 */
   private hintHoldTimers: Map<number, number> = new Map<number, number>();
+  /** 双拼 18 键两个字母的键上的横滑。 */
+  private eighteenSwipes: EighteenKeySwipeGesture = new EighteenKeySwipeGesture();
+  /** 横滑正选中字母的那个 18 键（`FourteenKey.letters`）和选中的大写字母；没有时都为空串。 */
+  @State eighteenSwipeKey: string = '';
+  @State eighteenSwipeLetter: string = '';
   private glideContext: CanvasRenderingContext2D =
     new CanvasRenderingContext2D(new RenderingContextSettings(true));
 
@@ -1544,6 +1555,9 @@ struct KeyboardView {
     this.hintHoldTimers.forEach((timer: number): void => clearTimeout(timer));
     this.hintHoldTimers.clear();
     this.letterHints.clear();
+    this.eighteenSwipes.clear();
+    this.eighteenSwipeKey = '';
+    this.eighteenSwipeLetter = '';
     this.keyPreview = null;
     this.keyPreviewFinger = -1;
   }
@@ -1733,7 +1747,8 @@ struct KeyboardView {
               : this.skin.keyLabelColor($$.emphasized, $$.special === true)
           })
         } else {
-          Text($$.letter === undefined ? $$.face : this.letterFace($$.letter))
+          Text($$.letter !== undefined ? this.letterFace($$.letter)
+            : this.eighteenSwipeFace($$.swipeLetters, $$.face))
             .fontSize($$.size)
             .minFontSize(KEY_HINT_FONT_SIZE)
             .maxFontSize($$.size)
@@ -2399,22 +2414,28 @@ struct KeyboardView {
     KeyboardSession.shared.setKeyGrid(this.keyGrid());
   }
 
-  /** 这个方案在这台设备上是否画 14 键：2in1 有实体键盘，不提供 14 键（同九键），同步过来的 `fourteen_key` 在 2in1 上画 26 键。 */
+  /** 这个方案在这台设备上是否画 14 键：全拼看方案布局，双拼看独立布局偏好；2in1 有实体键盘，一律回落 26 键。 */
   private offersFourteenKey(scheme: SchemeDefinition): boolean {
-    return scheme.touchKeyboardLayout === 'fourteen_key' && !KeyboardFormFactor.isDesktop();
+    const layout: string = scheme.engineScheme === 'shuangpin'
+      ? this.shuangpinLayout : scheme.touchKeyboardLayout;
+    return layout === 'fourteen_key' && !KeyboardFormFactor.isDesktop();
   }
 
   private offersEighteenKey(scheme: SchemeDefinition): boolean {
-    return scheme.touchKeyboardLayout === 'eighteen_key' && !KeyboardFormFactor.isDesktop();
+    const layout: string = scheme.engineScheme === 'shuangpin'
+      ? this.shuangpinLayout : scheme.touchKeyboardLayout;
+    return layout === 'eighteen_key' && !KeyboardFormFactor.isDesktop();
   }
 
-  /** 交给引擎的网格（`KeyGrid`），由当前键面决定；不是全拼时会话不开网格。英文下 14/18 键网格照旧开着，引擎在专用英文里不受理组码，字母走 26 键。 */
+  /** 交给引擎的网格（`KeyGrid`），由当前键面决定；双拼 18 键使用独立的网格值 5。英文下网格照旧保留，引擎在专用英文里不受理组码，字母走 26 键。 */
   private keyGrid(): number {
     if (this.nineKey) {
       return KeyGrid.NINE_KEY;
     }
     if (this.fourteenKey) return KeyGrid.FOURTEEN_KEY;
-    return this.eighteenKey ? KeyGrid.EIGHTEEN_KEY : KeyGrid.NONE;
+    if (!this.eighteenKey) return KeyGrid.NONE;
+    return this.scheme.engineScheme === 'shuangpin'
+      ? KeyGrid.EIGHTEEN_KEY_SHUANGPIN : KeyGrid.EIGHTEEN_KEY;
   }
 
   /** 是否正在画 14 键或 18 键键面：英文和本地模式画 26 键。 */
@@ -2615,6 +2636,25 @@ struct KeyboardView {
     this.expanded = KeyboardSession.shared.allCandidates();
     if (this.expandedGloss >= this.expanded.length) {
       this.expandedGloss = -1;
+    }
+  }
+
+  /**
+   * 展开面板里点中一个候选。只选掉前面一段、组字还在时面板留着：选词的回报经 onChanged 同步走到 refreshExpanded，换上剩下组字的全部候选，用户接着在面板里往下选（#9193，规则在 `CandidatePanelSelectionPolicy`）。整句上屏、组字清空或引擎拒绝了这次选择就收起，组字还在的话 leaveNineKeyPanel 照旧清掉筛选。九键面板开着笔画筛选时顺带清掉笔画：它比的是刚被选掉的那个字。
+   */
+  private chooseExpanded(index: number): void {
+    const nineKeyPanel: boolean = this.nineKeyPanel();
+    const handled: boolean = KeyboardSession.shared.chooseAny(index);
+    if (!CandidatePanelSelectionPolicy.keepsOpen(handled, KeyboardSession.shared.composing())) {
+      if (this.surface === SURFACE_EXPANDED) {
+        this.show(SURFACE_NONE);
+      }
+      return;
+    }
+    const strokes: string | null = nineKeyPanel && this.nineKeyPanel()
+      ? CandidatePanelSelectionPolicy.strokesAfterPartialSelection(this.nineKeyStrokes) : null;
+    if (strokes !== null) {
+      KeyboardSession.shared.setNineKeyFilter(this.nineKeySingleCharacter, strokes);
     }
   }
 
@@ -2901,6 +2941,7 @@ struct KeyboardView {
     this.fuzzyPinyin = KeyboardSession.shared.usesFuzzyPinyin();
     this.applySkins();
     this.wubiProfile = this.settings.wubiProfile;
+    this.shuangpinLayout = this.settings.shuangpinLayout;
     this.scheme = this.enabledScheme();
     this.nineKey = KeyboardScheme.isNineKeyLayout(this.scheme.touchKeyboardLayout);
     this.nineKeyShuangpinFaces = this.scheme.preferenceId === 'nine_key_shuangpin'
@@ -3450,6 +3491,17 @@ struct KeyboardView {
       this.settings.candidateFontSize, this.settings.candidatePreeditFontSize, false, this.stripWasShown));
   }
 
+  /** 候选条的读音行要不要占位。没有 canvas 时一直占位，候选不会因为它出现、消失而上下移动；有 canvas 时只在有东西显示时占位，见 `stripCanvasContentHeight`。 */
+  private readingRowShown(): boolean {
+    return this.settings.candidateCanvas === null || this.diagnostic.length > 0 || this.visibleComposition().caret
+      || this.visibleComposition().text.length > 0 || this.readingRowSpellings();
+  }
+
+  /** canvas 在候选条里至少要让出的内容高度：34vp 的候选通道，读音行占位时再加它和间距。皮肤的留白按它缩放，高亮因此不会画到面板外面。 */
+  private stripCanvasContentHeight(): number {
+    return CHIP_HEIGHT_VP + (this.readingRowShown() ? PREEDIT_LINE_VP + CANDIDATE_BAR_GAP_VP : 0);
+  }
+
   /** Nothing to spell, choose or report on a touch keyboard: the strip is the logo bar. */
   private stripIdle(): boolean {
     return !KeyboardFormFactor.isDesktop() && this.editing.length === 0
@@ -3980,6 +4032,7 @@ struct KeyboardView {
   touchStrip() {
     CandidateCanvasFrame({ scene: this.stripIdle() || this.surface === SURFACE_GEOMETRY ? null : this.settings.candidateCanvas,
       fixedContent: true, frameHeight: KeyboardMetrics.STRIP_HEIGHT_VP, fallbackColor: this.settings.candidateColors.surface,
+      minimumContentHeight: this.stripCanvasContentHeight(),
       onSize: (width: number): void => { this.availableWidth = width; },
       onPanelReady: (key: string, ready: boolean): void => this.canvasReady('strip', key, ready) }) {
     Column() {
@@ -4007,7 +4060,9 @@ struct KeyboardView {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor(this.settings.candidateCanvas === null || this.stripIdle() ? this.candidateCardColor(this.candidateColors().surface) : TRANSPARENT)
+    // 空闲时这里是工具栏，属于键盘：canvas 这时不画（见上面的 `scene`），底色也要用键盘的。用候选包的 `surface` 时，皮肤的白卡片配上按键前景色的图标，图标几乎看不见。
+    .backgroundColor(this.stripIdle() ? this.skin.background
+      : this.settings.candidateCanvas === null ? this.candidateCardColor(this.candidateColors().surface) : TRANSPARENT)
     .background(this.candidateBackground)
     .clip(this.settings.candidateBackgroundImage !== null)
     .borderRadius(KeyboardMetrics.STRIP_CORNER_VP)
@@ -4216,6 +4271,8 @@ struct KeyboardView {
         .height(PREEDIT_LINE_VP)
         .padding({ left: PREEDIT_INDENT_VP })
         .clip(true)
+        // canvas 在 50vp 的条里只留得出候选通道那么高，空着的读音行这时不占位（`None` 不参与布局）；有东西显示时照常占位，边框跟着再缩一些，见 `stripCanvasContentHeight`。
+        .visibility(this.readingRowShown() ? Visibility.Visible : Visibility.None)
 
         if (this.showsHandwritingCandidates()) {
           // OCR 结果也是候选，通过识别器而不是 Engine 选择。
@@ -4365,7 +4422,9 @@ struct KeyboardView {
       this.settings.candidateSkinLayout?.horizontal.itemPaddingRight, this.chipFontSize(), CHIP_PADDING_VP) })
     .justifyContent(FlexAlign.Center)
     .borderRadius(this.settings.candidateSkinLayout?.itemRadius ?? CHIP_RADIUS_VP)
-    .backgroundColor(candidate.highlighted ? this.skin.keyBackground : TRANSPARENT)
+    // canvas 下文字用候选包的配色，高亮也要用包的 `selected`；按键色配包的文字色会对不上，深色键盘配浅色模式的包时首选几乎看不见。
+    .backgroundColor(candidate.highlighted
+      ? this.settings.candidateCanvas === null ? this.skin.keyBackground : this.candidateColors().selected : TRANSPARENT)
     .stateStyles({
       normal: {
         .opacity(1)
@@ -5068,8 +5127,9 @@ struct KeyboardView {
 
   private eighteenKeyOptions(key: FourteenKey): KeyOptions {
     return {
-      face: key.label,
-      label: key.description,
+      face: this.compactKeyFace(key),
+      label: this.compactKeyDescription(key),
+      swipeLetters: key.letters,
       size: TOUCH_LETTER_FONT_SIZE,
       emphasized: false,
       width: 0,
@@ -5096,7 +5156,7 @@ struct KeyboardView {
     Column() {
       this.keyFace(this.eighteenKeyOptions(key))
     }
-    .accessibilityText(key.description)
+    .accessibilityText(this.compactKeyDescription(key))
     .layoutWeight(1)
     .height('100%')
     .backgroundColor(this.skin.keySurfaceBackground(false))
@@ -5110,22 +5170,126 @@ struct KeyboardView {
     .stateStyles({ normal: this.keyIdleStyle, pressed: this.keyPressedStyle })
     .animation({ duration: KEY_PRESS_MS })
     .responseRegion(this.keyHitRegion())
-    .onClick(() => this.tapEighteenKey(key))
+    .onTouch((event: TouchEvent): void => this.eighteenKeySwipeTouch(key, event))
+    .onClick((event: ClickEvent): void => this.clickEighteenKey(key, event))
     .gesture(LongPressGesture().onAction(() => {
+      if (this.swipesEighteenKey() && !this.eighteenSwipes.hold(key.letters)) {
+        // 横滑已经接管这次按压，长按不再弹出字母。
+        return;
+      }
+      this.endEighteenSwipeFace(key.letters);
       KeyboardSession.shared.softKeyPress(KeyIdPolicy.eighteenKey(key.letters));
       this.openKeyHold(EighteenKeyLayout.holdOptions(key));
     }))
   }
 
+  /** 两个字母的 18 键是否接横滑：只有双拼 18 键，全拼 18 键只点按。 */
+  private swipesEighteenKey(): boolean {
+    return this.scheme.engineScheme === 'shuangpin' && this.drawsEighteenKey();
+  }
+
+  /**
+   * 双拼 18 键两个字母的键上的一次触摸（`EighteenKeySwipePolicy`）：拖动时键面画选中的字母，抬手把它以大写精确标记交给引擎；回到起点、同一键上的第二根手指和系统取消都不输入。没越过阈值的触摸交给这个键的点击。
+   */
+  private eighteenKeySwipeTouch(key: FourteenKey, event: TouchEvent): void {
+    if (!this.swipesEighteenKey()) {
+      return;
+    }
+    if (event.type === TouchType.Down) {
+      if (event.changedTouches.length > 0) {
+        const touch: TouchObject = event.changedTouches[0];
+        this.eighteenSwipes.down(key.letters, touch.id, touch.windowX, touch.windowY);
+        this.showEighteenSwipeFace(key.letters, '');
+      }
+    } else if (event.type === TouchType.Move) {
+      const moved: TouchObject[] = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
+      for (const touch of moved) {
+        const selected: string | null = this.eighteenSwipes.move(key.letters, touch.id, touch.windowX, touch.windowY);
+        if (selected !== null) {
+          this.showEighteenSwipeFace(key.letters, selected);
+        }
+      }
+    } else if (event.type === TouchType.Up) {
+      if (event.changedTouches.length > 0) {
+        const touch: TouchObject = event.changedTouches[0];
+        const letter: string = this.eighteenSwipes.up(key.letters, touch.id, touch.windowX, touch.windowY);
+        this.endEighteenSwipeFace(key.letters);
+        this.typeEighteenKeyLetter(key, letter);
+      }
+    } else if (event.type === TouchType.Cancel) {
+      this.eighteenSwipes.cancel(key.letters);
+      this.endEighteenSwipeFace(key.letters);
+    }
+  }
+
+  /** 18 键的点击：全拼送整组；双拼由横滑判定这次按压是整组、精确字母还是已被横滑接管。 */
+  private clickEighteenKey(key: FourteenKey, event: ClickEvent): void {
+    if (!this.swipesEighteenKey()) {
+      this.tapEighteenKey(key);
+      return;
+    }
+    const tap: EighteenKeyTap = this.eighteenSwipes.click(key.letters, event.windowX, event.windowY);
+    if (tap.group) {
+      this.tapEighteenKey(key);
+    } else {
+      this.endEighteenSwipeFace(key.letters);
+      this.typeEighteenKeyLetter(key, tap.letter);
+    }
+  }
+
+  /** 横滑选中的字母以大写精确标记送入当前网格；键位与点按、长按同记在这一键上。 */
+  private typeEighteenKeyLetter(key: FourteenKey, letter: string): void {
+    if (letter.length === 0) {
+      return;
+    }
+    KeyboardSession.shared.softKeyPress(KeyIdPolicy.eighteenKey(key.letters));
+    KeyboardSession.shared.pressGridKey(letter.charCodeAt(0));
+  }
+
+  private showEighteenSwipeFace(letters: string, letter: string): void {
+    if (letter.length === 0 && this.eighteenSwipeKey !== letters) {
+      return;
+    }
+    if (this.eighteenSwipeKey !== letters) {
+      this.eighteenSwipeKey = letters;
+    }
+    if (this.eighteenSwipeLetter !== letter) {
+      this.eighteenSwipeLetter = letter;
+    }
+  }
+
+  private endEighteenSwipeFace(letters: string): void {
+    if (this.eighteenSwipeKey === letters) {
+      this.eighteenSwipeKey = '';
+      this.eighteenSwipeLetter = '';
+    }
+  }
+
+  /** 键面文字：横滑正选中这一键的字母时画那个字母，否则画原来的键面。 */
+  private eighteenSwipeFace(letters: string | undefined, face: string): string {
+    return letters !== undefined && letters === this.eighteenSwipeKey && this.eighteenSwipeLetter.length > 0
+      ? this.eighteenSwipeLetter : face;
+  }
+
   private fourteenKeyOptions(key: FourteenKey): KeyOptions {
     return {
-      face: key.label,
-      label: key.description,
+      face: this.compactKeyFace(key),
+      label: this.compactKeyDescription(key),
       size: TOUCH_LETTER_FONT_SIZE,
       emphasized: false,
       width: 0,
       action: () => this.tapFourteenKey(key)
     };
+  }
+
+  /** 双拼 14/18 键把微软双拼所需的分号并入 L 键；其他方案沿用共享键表的键面和读屏。 */
+  private compactKeyFace(key: FourteenKey): string {
+    return this.scheme.engineScheme === 'shuangpin' && key.letters === 'l' ? 'L;' : key.label;
+  }
+
+  private compactKeyDescription(key: FourteenKey): string {
+    return this.scheme.engineScheme === 'shuangpin' && key.letters === 'l'
+      ? '按键 L 分号' : key.description;
   }
 
   /** 点一下 14 键：记这一键的键位，把这一组的首字母交给引擎。 */
@@ -5169,7 +5333,7 @@ struct KeyboardView {
     Column() {
       this.keyFace(this.fourteenKeyOptions(key))
     }
-    .accessibilityText(key.description)
+    .accessibilityText(this.compactKeyDescription(key))
     .layoutWeight(1)
     .height('100%')
     .backgroundColor(this.skin.keySurfaceBackground(false))
@@ -7938,8 +8102,7 @@ struct KeyboardView {
                 })
                 .accessibilityText(this.expandedLabel(cell.index))
                 .onClick(() => {
-                  KeyboardSession.shared.chooseAny(cell.index);
-                  this.show(SURFACE_NONE);
+                  this.chooseExpanded(cell.index);
                 })
                 // 原版对这里的长按给出与工具条上相同的注释。只给注释：管理操作按页面而不是按这个列表编号，所以这里没有对它们有意义的序号。
                 .gesture(LongPressGesture().onAction(() => {

@@ -29,6 +29,7 @@
 #include "InputSchemeTraits.h"
 #include "FullscreenForeground.h"
 #include "HostApiDiagnosticLine.h"
+#include "HelpcodeRoot.h"
 #include "SoundPackRoot.h"
 #include "PluginPackRoot.h"
 #include "MaintenanceHotkey.h"
@@ -1292,6 +1293,7 @@ int wmain(int argc, wchar_t **argv) {
         };
     auto session_options = prepared.at("value");
     name_builtin_sound_packs(session_options, config.state_root);
+    name_builtin_helpcodes(session_options, config.state_root);
     name_official_plugin_packs(session_options, executable_directory());
     startup_stage = "pipe_server";
     WindowsServer server(
@@ -1488,6 +1490,12 @@ int wmain(int argc, wchar_t **argv) {
         [&](const CandidatePresentation &value) { server.candidate_rendered(value.lease, value.render_serial); },
         [&](const FocusLease &lease, bool open) { server.set_candidate_expansion(lease, open); },
         [&](const FocusLease &lease) { return server.candidate_lease_current(lease); }});
+    // 空格、数字键和点选的渲染屏障要等回执时叫醒候选窗立即绘制，屏障的 30 毫秒只花在真正的绘制上，不花在两级 16 毫秒的轮询上（#9519）。守卫声明在 candidates 之后、先于它析构：撤掉之后 Server 不会再调用这个回调。
+    server.set_candidate_render_request([&candidates] { candidates.wake(); });
+    struct CandidateRenderRequestGuard {
+      WindowsServer &server;
+      ~CandidateRenderRequestGuard() { server.set_candidate_render_request({}); }
+    } candidate_render_request_guard{server};
     // The global theme colours the card, the toolbar and the menus. Each surface resolves it in its own mode, and the answers are kept until the theme, the layout or the package on disk changes, so the shared layer's disk read never runs inside a draw.
     startup_stage = "candidate_theme";
     auto current_candidate_theme = candidate_theme_values(

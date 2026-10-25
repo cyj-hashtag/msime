@@ -1160,6 +1160,16 @@ if [[ ${#client_sources[@]} -eq 0 ]]; then
   echo "No Android client sources selected for compilation; the source filter is wrong" >&2
   exit 1
 fi
+# 详情页最多四个顶部分类（.agents/notes/implemented/feature/2026-10-13-android-settings-top-tabs.md）：分类是等宽分段，第五个会把每段挤得比其他页面窄。条件性分类也算在内，它出现时同样会挤。
+for page in "$repo_root"/platforms/android/java/app/msime/android/home/*.java; do
+  titles=$(tr '\n' ' ' < "$page" | grep -oE 'sectionTitles\(\) *\{ *return +(java\.util\.)?List\.of\([^)]*\)' || true)
+  [ -n "$titles" ] || continue
+  count=$({ grep -o '"[^"]*"' <<< "$titles" || true; } | wc -l | tr -d ' ')
+  if [ "$count" -gt 4 ]; then
+    echo "Android detail page declares $count section tabs, more than four: ${page#"$repo_root/"}" >&2
+    exit 1
+  fi
+done
 # 冒烟测试按文件自动发现：`tests/` 下除设备套件外的每个 `.java` 都参与编译，每个以 `Smoke.java` 结尾的类都会运行，没有 `static void main(` 入口的会让检查直接失败而不是被跳过，新加冒烟不必再登记到这里。排除的三处各有原因：`tests/device/**` 是要装进模拟器的设备套件，`core/NativeSmoke.java` 要加载 `libmsime_android.so`，`settings/KeyboardGeometryStrictIntSmoke.java` 要真实的 `org.json`，而这里只有 android.jar 里抛 `Stub!` 的桩。路径同样按仓库内的相对路径匹配，理由见上面那段关于 /home/runner 的说明。
 test_sources=()
 smoke_classes=()
@@ -1193,7 +1203,9 @@ javac --release 17 -Xlint:all -Werror -cp "$android_jar" -d "$output_dir" \
   "$repo_root/platforms/android/java/app/msime/android/home/SignInAttemptPolicy.java" \
   "$repo_root/platforms/android/java/app/msime/android/home/OnboardingChoicePolicy.java" \
   "$repo_root/platforms/android/java/app/msime/android/home/HelpcodeChoicePolicy.java" \
+  "$repo_root/platforms/android/gradle-app/ocr-module/src/main/java/app/msime/ocr/module/OcrPipeline.java" \
   "${test_sources[@]}"
+# 可选 OCR 模块的前后处理只用 Java 标准库，跟宿主的纯 Java 模型一起编译，由 tests/ocr/OcrPipelineSmoke.java 覆盖；模块里调用 ONNX Runtime 和 Android 图形接口的 OcrModule 只由 Gradle 编译。
 # 统一用 `$output_dir:$android_jar` 运行：改成自动发现前逐个核对过，原先按类分别给的 classpath（有的不带 android.jar）与统一 classpath 下 108 个冒烟的输出和退出码完全相同。
 for smoke in "${smoke_classes[@]}"; do
   if ! java -cp "$output_dir:$android_jar" "$smoke"; then

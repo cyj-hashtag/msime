@@ -14,6 +14,8 @@ use msime_client_core::host_surface::{
 };
 use msime_client_providers::ai::AiSuggestionRequest;
 use msime_client_services::dictionary::access::DictionaryAccess;
+/// 按用户的设置打一串键看候选，给 `msime-mcp candidates` 用。
+pub mod candidate_preview;
 pub mod clipboard_history;
 pub mod cloud_clipboard;
 pub mod cloud_dictionary;
@@ -110,6 +112,7 @@ pub(crate) fn valid_uuid_string(value: &str) -> bool {
 
 mod ffi;
 pub use ffi::*;
+pub mod local_session;
 
 /// 会话实际用的每页候选数：偏好或宿主覆盖的值，按本库编译到的平台能排的上限截断（`HostPlatform::max_candidate_page_size`）。共享文档在别的设备上存了 10 时，只排得下九个的宿主仍拿到 9。
 fn host_page_size(requested: u8) -> u8 {
@@ -291,6 +294,8 @@ struct HostSession {
     key_grid_override: Option<Option<KeyGrid>>,
     /// 宿主经 `msime_client_set_private_session` 标出的隐私会话（Android 的隐私模式和不允许学习的输入框，鸿蒙和 iOS 的隐私模式）：不记选词位置和上屏效率。与用户自己关掉的「学习」无关。
     statistics_private: bool,
+    /// 只用来看候选的会话（`ffi::session::SessionUse::Preview`）：在任何平台上都不记选词位置和上屏效率。
+    preview: bool,
     /// An AI provider credential the host keeps outside the preferences (the iOS Keychain), handed over for this session only and never written back.
     ai_credential: Option<SessionAiCredential>,
     /// Cached copy used by every online query until preferences change.
@@ -630,9 +635,9 @@ impl HostSession {
                 snapshot.preferences.cloud_candidates
             })
     }
-    /// Android、鸿蒙与 iOS 会话是否不记统计：只看宿主经 `msime_client_set_private_session` 标出的隐私会话。用户在设置里关掉学习不算，统计开着就照常计数。只在 [`PRIVATE_SESSIONS_SKIP_STATISTICS`] 时成立，其他宿主照旧计数。
+    /// Android、鸿蒙与 iOS 会话是否不记统计：只看宿主经 `msime_client_set_private_session` 标出的隐私会话。用户在设置里关掉学习不算，统计开着就照常计数。只在 [`PRIVATE_SESSIONS_SKIP_STATISTICS`] 时成立，其他宿主照旧计数。只看候选的会话（`preview`）在任何平台上都不计。
     fn private_session(&self) -> bool {
-        PRIVATE_SESSIONS_SKIP_STATISTICS && self.statistics_private
+        self.preview || (PRIVATE_SESSIONS_SKIP_STATISTICS && self.statistics_private)
     }
 
     /// Count a committing selection in memory, and hand the batch to the store once it is `SELECTION_BATCH` long.
@@ -3287,10 +3292,10 @@ fn response(operation: impl FnOnce() -> Result<Value, String>) -> *mut c_char {
         .into_raw()
 }
 
-fn with_session(
+fn with_session<T>(
     handle: u64,
-    action: impl FnOnce(&mut HostSession) -> Result<Value, String>,
-) -> Result<Value, String> {
+    action: impl FnOnce(&mut HostSession) -> Result<T, String>,
+) -> Result<T, String> {
     SESSIONS.with(|sessions| {
         let mut sessions = sessions
             .try_borrow_mut()
@@ -3310,58 +3315,65 @@ fn dispatch(handle: u64, action: Action) -> *mut c_char {
 ///
 /// 选择加入生命周期的会话按这个顺序：调用前采样并发 `input` → `runtime.dispatch`（脚本的 `candidates` 在里面的 refresh 和展开之后）→ 统计 → 读派发事实 → `complete_transition`（全角转换、再中英文之间加空格都在这里，之后才是宿主拿到的字节，宿主再做简繁转换）→ `before_commit`（脚本可以改写 body）→ 其余事件和内置消费者 → 序列化，FEEDBACK 开着时插入 `feedback`。没选择加入的会话只走原来的几步。
 fn dispatch_call(handle: u64, action: Action, host: Option<lifecycle::InputClass>) -> *mut c_char {
-    response(|| {
-        with_session(handle, |session| {
-            // 大写锁定改道先于其余处理，后面看到的都是改道后的动作。
-            let action = session.caps_lock_punctuation(action);
-            let action = session.runtime.candidate_shortcut(action);
-            let currency_punctuation = matches!(
-                action,
-                Action::Character { value: b'$', .. } | Action::Punctuation(b'$')
-            );
-            let pending = session.lifecycle_input(&action, host);
-            // Which row the user reached for, read before dispatching because the view it is
-            // relative to is gone afterwards. Every platform host routes candidate selection
-            // through here, so counting it here covers all of them without a line of platform
-            // code; doing it per host would have meant six chances to forget.
-            let position = selected_position(&action);
-            let efficiency = position.and_then(|_| session.efficiency_candidate(&action));
-            let result = session.runtime.dispatch(action).map_err(|e| e.to_string());
-            // 报错前 runtime 可能已经改了组字，生命周期照样收尾。
-            let mut result = session.lifecycle_on_error(pending, result)?;
-            // Text the Engine generated (a calculator result, a command, a mention) was picked, not typed, and stays out of the statistics the way it stays out of learning.
-            let counts_as_typing = result
-                .commit_context
-                .as_ref()
-                .is_none_or(|context| context.typing_statistics);
-            if result.commit.is_some() && counts_as_typing {
-                // 先记效率再记位置：位置攒满一批会立刻写盘并带走待写的效率，这一次的效率要赶上同一批，否则进程在下一批之前被杀就丢了。
-                if let Some(candidate) = efficiency {
-                    session.count_efficiency(candidate);
-                }
-                if let Some(position) = position {
-                    session.count_selection(position);
+    response(|| dispatch_value(handle, action, host))
+}
+
+/// [`dispatch_call`] 的本体，返回值不经 C 字符串，`candidate_preview` 在本进程里打字时直接用它。
+fn dispatch_value(
+    handle: u64,
+    action: Action,
+    host: Option<lifecycle::InputClass>,
+) -> Result<Value, String> {
+    with_session(handle, |session| {
+        // 大写锁定改道先于其余处理，后面看到的都是改道后的动作。
+        let action = session.caps_lock_punctuation(action);
+        let action = session.runtime.candidate_shortcut(action);
+        let currency_punctuation = matches!(
+            action,
+            Action::Character { value: b'$', .. } | Action::Punctuation(b'$')
+        );
+        let pending = session.lifecycle_input(&action, host);
+        // Which row the user reached for, read before dispatching because the view it is
+        // relative to is gone afterwards. Every platform host routes candidate selection
+        // through here, so counting it here covers all of them without a line of platform
+        // code; doing it per host would have meant six chances to forget.
+        let position = selected_position(&action);
+        let efficiency = position.and_then(|_| session.efficiency_candidate(&action));
+        let result = session.runtime.dispatch(action).map_err(|e| e.to_string());
+        // 报错前 runtime 可能已经改了组字，生命周期照样收尾。
+        let mut result = session.lifecycle_on_error(pending, result)?;
+        // Text the Engine generated (a calculator result, a command, a mention) was picked, not typed, and stays out of the statistics the way it stays out of learning.
+        let counts_as_typing = result
+            .commit_context
+            .as_ref()
+            .is_none_or(|context| context.typing_statistics);
+        if result.commit.is_some() && counts_as_typing {
+            // 先记效率再记位置：位置攒满一批会立刻写盘并带走待写的效率，这一次的效率要赶上同一批，否则进程在下一批之前被杀就丢了。
+            if let Some(candidate) = efficiency {
+                session.count_efficiency(candidate);
+            }
+            if let Some(position) = position {
+                session.count_selection(position);
+            }
+        }
+        let facts = session.runtime.facts();
+        // 固定标点表返回全角人民币；半角只改本次 `$` 产生的尾巴，候选和短语里的符号保持原文。
+        if currency_punctuation && result.view.character_width == CharacterWidth::Halfwidth {
+            if let Some(commit) = result.commit.as_mut() {
+                if facts.tail_chars == 1 && commit.ends_with('￥') {
+                    commit.truncate(commit.len() - '￥'.len_utf8());
+                    commit.push('¥');
                 }
             }
-            let facts = session.runtime.facts();
-            // 固定标点表返回全角人民币；半角只改本次 `$` 产生的尾巴，候选和短语里的符号保持原文。
-            if currency_punctuation && result.view.character_width == CharacterWidth::Halfwidth {
-                if let Some(commit) = result.commit.as_mut() {
-                    if facts.tail_chars == 1 && commit.ends_with('￥') {
-                        commit.truncate(commit.len() - '￥'.len_utf8());
-                        commit.push('¥');
-                    }
-                }
-            }
-            let mut result = session.complete_transition(result);
-            // 脚本插件可能在这里改写上屏的 body（`before_commit`），宿主拿到的是改写之后的文本；引擎学习和 AI 上文已经按原文记下。
-            let feedback = session.lifecycle_after(pending, facts, &mut result);
-            let mut value = serde_json::to_value(result).map_err(|e| e.to_string())?;
-            if let (Some(effect), Value::Object(fields)) = (feedback, &mut value) {
-                fields.insert("feedback".into(), json!({ "typing_effect": effect }));
-            }
-            Ok(value)
-        })
+        }
+        let mut result = session.complete_transition(result);
+        // 脚本插件可能在这里改写上屏的 body（`before_commit`），宿主拿到的是改写之后的文本；引擎学习和 AI 上文已经按原文记下。
+        let feedback = session.lifecycle_after(pending, facts, &mut result);
+        let mut value = serde_json::to_value(result).map_err(|e| e.to_string())?;
+        if let (Some(effect), Value::Object(fields)) = (feedback, &mut value) {
+            fields.insert("feedback".into(), json!({ "typing_effect": effect }));
+        }
+        Ok(value)
     })
 }
 
@@ -3523,7 +3535,7 @@ const SELECTION_BATCH: u64 = 32;
 #[cfg(test)]
 mod tests;
 
-/// 只看偏好时，运行 `scheme` 的会话以哪种组码网格开始（宿主的 `msime_client_set_key_grid` 和 `msime_client_set_nine_key_mode` 仍可覆盖，但覆盖只对设下它时的方案有效）。Android 和 iOS 双拼看独立的 `touch_shuangpin_layout`，14 键按当前 26 键方案派生，Android 另支持 18 键；其他宿主保留但忽略这个偏好。全拼看 `touch_keyboard_layout`：九键是九键，14 键是 14 键，九键双拼按 `nine_key_shuangpin_profile` 取表（自定义表不能用时按默认的内置方案）。注音只有九键，还要选了「注音 9 键」触屏方案，这个方案只有 Android 键盘会写：`touch_keyboard_layout` 是所有方案共用的一个字段，桌面宿主为全拼九宫格设它（Linux 的九键开关），那里的注音会话必须留在大千键位，不能继承九宫格。
+/// 只看偏好时，运行 `scheme` 的会话以哪种组码网格开始（宿主的 `msime_client_set_key_grid` 和 `msime_client_set_nine_key_mode` 仍可覆盖，但覆盖只对设下它时的方案有效）。Android 和 iOS 双拼看独立的 `touch_shuangpin_layout`，14 键和 18 键按当前 26 键方案派生；其他宿主保留但忽略这个偏好。全拼看 `touch_keyboard_layout`：九键是九键，14 键是 14 键，18 键只在 Android 和 iOS 上开启（鸿蒙的全拼 18 键由宿主自己按偏好调用 `msime_client_set_key_grid`，其他宿主还没有对应键面），九键双拼按 `nine_key_shuangpin_profile` 取表（自定义表不能用时按默认的内置方案）。注音只有九键，还要选了「注音 9 键」触屏方案，这个方案只有 Android 键盘会写：`touch_keyboard_layout` 是所有方案共用的一个字段，桌面宿主为全拼九宫格设它（Linux 的九键开关），那里的注音会话必须留在大千键位，不能继承九宫格。
 pub(crate) fn layout_key_grid(
     scheme: Option<SchemeType>,
     preferences: &Preferences,
@@ -3544,17 +3556,17 @@ fn layout_key_grid_for(
             TouchShuangpinLayout::FourteenKey => {
                 return Some(fourteen_key_shuangpin_grid(preferences))
             }
-            TouchShuangpinLayout::EighteenKey if platform == HostPlatform::Android => {
+            TouchShuangpinLayout::EighteenKey => {
                 return Some(eighteen_key_shuangpin_grid(preferences))
             }
-            TouchShuangpinLayout::TwentySixKey | TouchShuangpinLayout::EighteenKey => {}
+            TouchShuangpinLayout::TwentySixKey => {}
         }
     }
     match (preferences.touch_keyboard_layout, scheme) {
         (TouchKeyboardLayout::NineKey, Some(SchemeType::Quanpin)) => Some(KeyGrid::NineKey),
         (TouchKeyboardLayout::FourteenKey, Some(SchemeType::Quanpin)) => Some(KeyGrid::FourteenKey),
         (TouchKeyboardLayout::EighteenKey, Some(SchemeType::Quanpin))
-            if platform == HostPlatform::Android =>
+            if matches!(platform, HostPlatform::Android | HostPlatform::Ios) =>
         {
             Some(KeyGrid::EighteenKey)
         }

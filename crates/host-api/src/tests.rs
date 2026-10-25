@@ -8,7 +8,7 @@ use msime_client_core::host_surface::compiled_input_schemes;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn eighteen_key_quanpin_layout_only_starts_on_android() {
+fn eighteen_key_quanpin_layout_starts_on_android_and_ios() {
     let preferences = Preferences {
         touch_keyboard_layout: TouchKeyboardLayout::EighteenKey,
         ..Preferences::default()
@@ -23,7 +23,8 @@ fn eighteen_key_quanpin_layout_only_starts_on_android() {
     ] {
         assert_eq!(
             layout_key_grid_for(platform, Some(SchemeType::Quanpin), &preferences),
-            (platform == HostPlatform::Android).then_some(KeyGrid::EighteenKey),
+            matches!(platform, HostPlatform::Android | HostPlatform::Ios)
+                .then_some(KeyGrid::EighteenKey),
             "{platform:?}"
         );
         assert_eq!(
@@ -3524,7 +3525,7 @@ fn eighteen_key_grid_abi_numbers_keep_scheme_and_composition() {
 }
 
 #[test]
-fn eighteen_key_shuangpin_preference_is_only_applied_by_android() {
+fn eighteen_key_shuangpin_preference_is_applied_by_android_and_ios() {
     let mut document = serde_json::to_value(chinese_preferences()).unwrap();
     document["scheme"] = "shuangpin".into();
     document["touch_shuangpin_layout"] = "eighteen_key".into();
@@ -3541,7 +3542,7 @@ fn eighteen_key_shuangpin_preference_is_only_applied_by_android() {
         let grid = layout_key_grid_for(platform, Some(SchemeType::Shuangpin), &preferences);
         assert_eq!(
             grid.is_some(),
-            platform == HostPlatform::Android,
+            matches!(platform, HostPlatform::Android | HostPlatform::Ios),
             "{platform:?}"
         );
         if let Some(grid) = grid {
@@ -14593,6 +14594,74 @@ fn quick_phrase_desktop_lock(resources: &Path) -> ResourceSet {
     set
 }
 
+/// Windows 的安装布局：Server 的资源目录是 Program Files 下的 `server\resources`，那里只有锁文件列出的词库；辅助码表由安装器放在 DataDir 的 `helpcodes`（installer/Prepare-PackageFiles.ps1），DataDir 就是 Server 和 TIP 的状态根。会话按 Windows 宿主传给 `msime_client_create` 的选项建：准备出的文档，加上 Server（server_main.cpp）和 TIP（tsf/HostConfiguration.cpp）写进内存的 `helpcode_fallback_resources`（src/system/HelpcodeRoot.h）。合成词库里「阳」词频高于「杨」，码表只给「杨」辅助码 mu：`yh` 下「杨」带着注释，`yhm` 把它提到首位。
+#[test]
+fn windows_sessions_read_the_builtin_helpcode_tables_from_the_data_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    let resources = directory.path().join("server/resources");
+    let state = directory.path().join("DataDir");
+    let mut set = synthetic_desktop_lock(&resources);
+    rusqlite::Connection::open(resources.join("msime-pinyin.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE tbl_1_y(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+             INSERT INTO tbl_1_y VALUES('yang','y','阳',2000),('yang','y','杨',1000);
+             CREATE TABLE tbl_2_y(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+             CREATE TABLE quick_parases(key TEXT,value TEXT,weight INTEGER);",
+        )
+        .unwrap();
+    for artifact in &mut set.artifacts {
+        let bytes = std::fs::read(resources.join(&artifact.name)).unwrap();
+        artifact.sha256 = hex::encode(Sha256::digest(&bytes));
+        artifact.size = bytes.len() as u64;
+    }
+    std::fs::create_dir_all(state.join("helpcodes")).unwrap();
+    std::fs::write(
+        state.join("helpcodes/xiaohe_helpcode.txt"),
+        "阳=rr\n杨=mu\n",
+    )
+    .unwrap();
+    assert!(!resources.join("helpcodes").exists());
+
+    let mut options: Value = serde_json::from_str(
+        &prepare_host_with_updates(&resources, &state, Edition::full(), &set).unwrap(),
+    )
+    .unwrap();
+    // 准备出的文档自己不知道 DataDir 里的码表：资源目录没有 `helpcodes/`，也没有词库更新记录可查。
+    assert!(
+        options.get("helpcode_fallback_resources").is_none(),
+        "{options}"
+    );
+    // name_builtin_helpcodes 在 DataDir 有 `helpcodes` 目录、文档里还没有回退目录时写的就是 DataDir 本身；去掉这一行就是修复之前 Windows 传的选项，`yh` 下「杨」没有注释。
+    options["helpcode_fallback_resources"] = json!(state);
+    let mut preferences = chinese_preferences();
+    preferences.scheme = InputScheme::Shuangpin;
+    preferences.learning = false;
+    preferences.cloud_candidates = false;
+    preferences.shuangpin_helpcode.enabled = true;
+    preferences.shuangpin_helpcode.schema = msime_client_core::preferences::HelpcodeSchema::Xiaohe;
+    preferences.shuangpin_helpcode.show_in_candidate_window = true;
+    options["preferences"] = serde_json::to_value(&preferences).unwrap();
+    let document = options.to_string();
+    let created = read(unsafe { msime_client_create(document.as_ptr(), document.len()) });
+    assert_eq!(created["ok"], true, "{created}");
+    let handle = created["value"]["session"].as_u64().unwrap();
+    read(msime_client_focus(handle, true));
+    let view = type_letters(handle, b"yh");
+    let annotation = view["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["text"] == "杨")
+        .and_then(|candidate| candidate["annotation"].as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(annotation.contains("mu"), "yh: {view}");
+    let view = type_letters(handle, b"m");
+    assert_eq!(view["candidates"][0]["text"], "杨", "yhm: {view}");
+    read(msime_client_destroy(handle));
+}
+
 /// 设置页新增一条快捷短语（`edit` 不带 `previous`），再按 `options` 列出快捷短语，返回列出的短语。
 fn add_then_browse_quick_phrases(
     writer: &Value,
@@ -19760,7 +19829,7 @@ fn mobile_voice_status_export_uses_shared_status_rules() {
     });
     assert_eq!(
         result["value"]["status"],
-        "还需准备本地语音运行库，请到「模型」下载或导入"
+        "还需准备本地语音运行库，请在下方「本地识别准备」下载或导入"
     );
 
     let provider = "system";

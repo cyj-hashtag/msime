@@ -291,9 +291,11 @@ function Assert-SelectedAccent($element) {
         $bitmap.Dispose()
     }
 }
+# 页首名称最多等多久。`scripts/test-windows-settings-page-readiness.py` 只加载下面两个函数来测它们，把它调短：那里有一项要等满超时，按 15 秒等，加上 pwsh 冷启动和 Add-Type，在并行跑检查的 CI 机上会超过外层的 40 秒。
+$script:pageIntroNameSeconds = 15
 function Wait-PageIntroName($window, [string]$page) {
     # 节点先出现、名称稍后才可读；每轮重新查询，返回当次名称，避免断言再读到重建中的节点。
-    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    $deadline = [DateTime]::UtcNow.AddSeconds($script:pageIntroNameSeconds)
     do {
         try {
             $content = Find-ById $window 'settings-content'
@@ -394,6 +396,30 @@ function Assert-WubiCandidateSelection($window) {
     } while ($keys.enabled -and [DateTime]::UtcNow -lt $deadline)
     if ($keys.enabled -or $keys.second_key -ne "'" -or $keys.third_key -ne ';') { throw 'Disabling Wubi shortcuts lost custom keys' }
     Write-Host 'Wubi shortcut toggle, atomic swap, reload and retained keys passed'
+}
+function Assert-CommandLineCandidates($window) {
+    # 「命令行查询候选」（#9663）缺省关闭；经实际开关打开再关上，每次只改 diagnostic_log.command_line_candidates，同组的两个日志开关保持合成偏好里的值。
+    $content = Find-ById $window 'settings-content'
+    $name = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '命令行查询候选')
+    $toggleable = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::IsTogglePatternAvailableProperty, $true)
+    $toggle = $content.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.AndCondition($name, $toggleable)))
+    if (-not $toggle -or -not $toggle.Current.IsEnabled) { throw 'Maintenance page is missing the 命令行查询候选 switch' }
+    $pattern = $toggle.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    if ($pattern.Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) { throw '命令行查询候选 must default to off' }
+    $path = Join-Path $state 'preferences.json'
+    $before = (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).preferences.diagnostic_log
+    if ($before.command_line_candidates -ne $false) { throw 'Synthetic preferences do not start with command_line_candidates off' }
+    foreach ($expected in @($true, $false)) {
+        $pattern.Toggle()
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 200
+            $diagnostics = (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json).preferences.diagnostic_log
+        } while ($diagnostics.command_line_candidates -ne $expected -and [DateTime]::UtcNow -lt $deadline)
+        if ($diagnostics.command_line_candidates -ne $expected) { throw "命令行查询候选 was not saved as $expected" }
+        if ($diagnostics.server -ne $before.server -or $diagnostics.tsf -ne $before.tsf) { throw 'Saving 命令行查询候选 changed the diagnostic log switches' }
+    }
+    Write-Host '命令行查询候选 default, save and retained diagnostic log switches passed'
 }
 function Find-CandidatePageSizeSlider($window) {
     $nameCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, '每页候选项数量')
@@ -1017,8 +1043,8 @@ try {
                     if (Find-ByName $content '反馈描述') { throw 'Feedback rendered inside the about version tab' }
                 }
                 if ($page -eq 'dev') {
-                    # 照 macOS 的维护页依次是输入法服务、诊断日志、数据目录和 Windows 独有的设置文件；只查行在不在，不点「重启」，免得重启跑验收这台机器上真正的 Server。
-                    foreach ($name in @('输入法服务', '立即重启输入法服务', '诊断日志', '日志文件', 'TSF 端日志', '数据目录', '当前目录', '设置文件')) {
+                    # 照 macOS 的维护页依次是输入法服务、诊断日志、数据目录和 Windows 独有的设置文件，诊断日志之后还有「命令行工具」；只查行在不在，不点「重启」，免得重启跑验收这台机器上真正的 Server。开关的缺省值和保存见 Assert-CommandLineCandidates。
+                    foreach ($name in @('输入法服务', '立即重启输入法服务', '诊断日志', '日志文件', 'TSF 端日志', '命令行工具', '命令行查询候选', '数据目录', '当前目录', '设置文件')) {
                         if (-not (Find-ByName $content $name)) { throw "Maintenance page is missing: $name" }
                     }
                 }
@@ -1281,6 +1307,8 @@ try {
             }
         }
         Assert-SentenceModelSettings $window $theme
+        Open-Page $window 'dev'
+        Assert-CommandLineCandidates $window
         # 通过真实单选控件切换方案，再读合成偏好确认保存成功，避免只验证静态页面。方案卡片在「输入方案」标签里。
         Open-Page $window 'typing'
         Select-PageTab $window 'input-tab-scheme' '中文方案'

@@ -20,7 +20,7 @@ Status: implemented
 
 `CandidateCanvasAssets` 向 `msime_client_skin_resource` 请求时带 `encoding: "base64"`，读回 `bytesBase64` 再 `Data(base64Encoded:)`。默认的 `bytes` 数组每个字节在共享层是一个 `serde_json::Value`，在 Swift 侧又是 `JSONSerialization` 里的一个数字对象：用 `crates/host-api/examples/skin_resource_memory.rs` 的计数分配器测 1 MiB 的图，共享层建响应时峰值 64 MiB（8 MiB 的图是 512 MiB），base64 是 5.3 MiB；macOS 上用同一份响应测 Swift 侧解析，数组多占约 40 MiB，base64 约 3 MiB。键盘扩展从冷启动到画出第一帧一共才三四十 MiB（见[内存读数](../bug-fix/2026-10-10-ios-keyboard-memory-telemetry.md)），而这次读取在后台队列上、每次键盘出现都会做一遍（`viewWillAppear` 清掉请求键后由 `applyKeyboardSkin` 重新加载）。键盘先画出来、随后系统按内存上限结束扩展、退回系统键盘，正是 #9008 那类现象；这条路径只影响打开「候选栏使用主题配色」并选了带图片皮肤的用户，#9008 的报告者是否属于这一类没有确认。
 
-随后其余调用方也都改成请求 base64：Android 键盘、HarmonyOS 键盘（装饰图、贴图面板、工具栏图）、HarmonyOS 设置页的图片与字体、Windows 设置和 Win7 设置。它们没有键盘扩展那样低的上限，但共享层那份开销与平台无关：单个资源上限 8 MiB，按数组返回时共享层峰值约 512 MiB；Android 的 1 MiB 上限和 HarmonyOS 的 16 MiB 预算都要等整份数组解析完才检查，挡不住这个峰值。HarmonyOS 键盘最终要的本来就是 base64，以前是数组转 `Uint8Array` 再重新编码，现在直接使用；宽高比只解码文件头的前几 KiB。HarmonyOS 设置页面的 `SkinImage` 契约仍是 `bytes` 数组，由 `apps/harmony` 的桥接把 base64 解回数组，页面不变。Windows 候选窗、macOS、Linux 自己读文件，不经这个接口。数组仍是默认值，只为旧调用方保留；未知的 `encoding` 报错，不悄悄退回数组。
+随后其余调用方也都改成请求 base64：Android 键盘、HarmonyOS 键盘（装饰图、贴图面板、工具栏图）、HarmonyOS 设置页的图片与字体、Windows 设置和 Win7 设置。它们没有键盘扩展那样低的上限，但共享层那份开销与平台无关：单个资源上限 8 MiB，按数组返回时共享层峰值约 512 MiB；Android 的 1 MiB 上限和 HarmonyOS 的 16 MiB 预算都要等整份数组解析完才检查，挡不住这个峰值。HarmonyOS 键盘最终要的本来就是 base64，以前是数组转 `Uint8Array` 再重新编码，现在直接使用；宽高比只解码文件头的前几 KiB。Mate 70 真机上读一个带 8 MiB 挂件的 canvas 包，键盘进程的峰值比读取前高：数组约 +520 MB、1.2 秒；改用 base64 后起初仍有约 +540 MB、0.75 秒，原因是预算检查用 `/^[A-Za-z0-9+/]*={0,2}$/` 扫了整个 base64 字符串，去掉正则（只看长度能否被 4 整除）后约 +34 MB、0.15 秒。1 MiB 的挂件依次约 +66 MB、+68 MB，去掉正则后峰值没有超过读取前。不要在键盘里对整段资源字符串跑正则。HarmonyOS 设置页面的 `SkinImage` 契约仍是 `bytes` 数组，由 `apps/harmony` 的桥接把 base64 解回数组，页面不变。Windows 候选窗、macOS、Linux 自己读文件，不经这个接口。数组仍是默认值，只为旧调用方保留；未知的 `encoding` 报错，不悄悄退回数组。
 
 ## Alternatives considered
 
@@ -29,7 +29,7 @@ Status: implemented
 - 共享层直接把响应写成字符串、跳过 `Value` 树，线上格式不变，所有平台一起受益：共享层的 64 倍能降到约 5 倍。但 Swift 侧解析数字数组的那 40 MiB 一点没少，键盘扩展照样超限；要省掉后者就必须换掉数组。
 - 新增一个把原始字节交给回调的 C 函数（像 `msime_client_skin_animation_decode` 那样）：没有编码开销。但它是一个新符号，Swift 要写回调桥，换来的只是 base64 那 1.33 倍；社区接口已经用 base64 传预览图，沿用同一种做法。
 - Swift 自己按清单里的相对路径读文件：最省内存。但包的再校验（清单合法、路径不出包、类型与请求一致）就绕过了共享层，`msime_client_skin_resource` 存在的意义正是这道校验。
-- 完整保留桌面留白能得到最直接的几何映射，但桌面的外留白加内边距可能超过整个手机候选条高度；统一缩放装饰与边框，把可读文字区作为下限，比提高键盘高度更符合固定高度的输入法约束。
+- 完整保留桌面留白能得到最直接的几何映射，但桌面的外留白加内边距可能超过整个手机候选条高度；统一缩放装饰与边框，把可读文字区作为下限，比提高键盘高度更符合固定高度的输入法约束。这个下限不能低于词块的最小高度 34pt（`candidateChipMinimumSize`）：原先是 28pt，与词块的高度约束同为 999 优先级，默认字号下首选高亮会伸出内容区。顶栏底色只在显示候选时取候选配色或让 canvas 透出；空闲时那里是工具栏，用键盘自己的底色，canvas 解码中或失败时也一样，HarmonyOS 上同样的错配让工具栏图标几乎看不见。
 
 ## 未签名测试宿主
 

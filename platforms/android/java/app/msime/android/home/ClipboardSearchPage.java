@@ -29,6 +29,8 @@ import app.msime.android.ClipboardHistoryRetentionPolicy;
 import app.msime.android.ClipboardHistoryStore;
 import app.msime.android.ClipboardSearchPolicy;
 import app.msime.android.ClipboardOperationAuthenticationPolicy;
+import app.msime.android.SystemAuthenticators;
+import app.msime.android.AuthenticationPauseTracker;
 import app.msime.android.DeviceDataApi;
 import app.msime.android.R;
 import app.msime.android.ViewPolicy;
@@ -59,6 +61,7 @@ public final class ClipboardSearchPage extends ReloadingDetailPage {
     @Nullable private GroupCard results;
     private boolean authorized;
     @Nullable private BiometricPrompt authentication;
+    private final AuthenticationPauseTracker pause = new AuthenticationPauseTracker();
 
     /** 查询框里的文字放在 ViewModel 里：旋转、换深浅模式会重建 Activity，Fragment 换成新实例，字段会回到空串。 */
     public static final class Query extends ViewModel {
@@ -70,6 +73,7 @@ public final class ClipboardSearchPage extends ReloadingDetailPage {
     @Override public void onCreate(@Nullable Bundle saved) {
         super.onCreate(saved);
         clipboardExport.restore(saved);
+        clipboardExport.onAuthenticationEnded(this::authenticationEnded);
         query = new ViewModelProvider(this).get(Query.class);
     }
 
@@ -110,15 +114,33 @@ public final class ClipboardSearchPage extends ReloadingDetailPage {
 
     @Override protected boolean shouldReloadOnContentReady() { return false; }
 
+    @Override public void onPause() {
+        super.onPause();
+        pause.paused(authenticating());
+    }
+
+    /** 暂停时认证（含页内导出的认证）还开着，回来时是否重新认证由认证的结果决定，见 {@link AuthenticationPauseTracker}。 */
     @Override protected void onVisible() {
+        if (pause.reentersOnVisible(authenticating())) reenter();
+    }
+
+    private boolean authenticating() { return authentication != null || clipboardExport.authenticating(); }
+
+    private void reenter() {
         authorized = false;
         requestAuthentication();
+    }
+
+    /** 认证在离开页面时被系统取消、而页面已经回到眼前：按重新进入处理，否则页面既没有授权也没有认证窗口。 */
+    private void authenticationEnded(boolean systemCanceled) {
+        if (pause.reentersOnEnd(systemCanceled, isResumed() && getView() != null)) reenter();
     }
 
     @Override protected void onContentDestroyed() {
         if (authentication != null) authentication.cancelAuthentication();
         authentication = null;
         authorized = false;
+        pause.reset();
         results = null;
         clipboardExport.destroyed();
         // 视图没了，删除的回调就不会再交回来；不清掉的话这一页之后的操作全被挡住。
@@ -163,8 +185,7 @@ public final class ClipboardSearchPage extends ReloadingDetailPage {
             reload();
             return;
         }
-        int authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG
-            | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+        int authenticators = SystemAuthenticators.allowed();
         Context context = requireContext();
         if (BiometricManager.from(context).canAuthenticate(authenticators)
                 != BiometricManager.BIOMETRIC_SUCCESS) {
@@ -177,11 +198,13 @@ public final class ClipboardSearchPage extends ReloadingDetailPage {
                     authentication = null;
                     authorized = true;
                     if (getView() != null) reload();
+                    authenticationEnded(false);
                 }
 
                 @Override public void onAuthenticationError(int code, CharSequence message) {
                     authentication = null;
                     authorized = false;
+                    authenticationEnded(AuthenticationPauseTracker.systemCanceled(code, android.os.Build.VERSION.SDK_INT));
                 }
             });
         BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder()
