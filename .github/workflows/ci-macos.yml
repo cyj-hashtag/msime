@@ -1,5 +1,8 @@
 name: Korean input transport diagnostic
 on:
+  push:
+    branches:
+      - codex/korean-input-probe-20261025
   workflow_dispatch:
 permissions:
   contents: read
