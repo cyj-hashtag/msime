@@ -259,6 +259,25 @@ jobs:
         id: native-build
         if: ${{ matrix.build == 'true' }}
         run: cmake --build build --parallel "$(sysctl -n hw.logicalcpu)"
+      # 保留真实编译产物，后续诊断输入源准备流程时可以核对来源后复用，避免每次重新编译 Rust/C++。
+      - name: Archive Korean system-input build
+        id: source-build-archive
+        if: ${{ matrix.build == 'true' && matrix.architecture == 'x86_64' }}
+        run: |
+          tar -czf "$RUNNER_TEMP/korean-system-input-build-x86_64.tar.gz" -C build '水杉输入法.app' korean-system-input-acceptance.app
+          git rev-parse HEAD > "$RUNNER_TEMP/korean-system-input-build-revision.txt"
+          printf '%s\n' '${{ github.event.pull_request.head.sha || github.sha }}' > "$RUNNER_TEMP/korean-system-input-build-head.txt"
+      - name: Upload Korean system-input build
+        if: ${{ steps.source-build-archive.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: korean-system-input-build-x86_64
+          path: |
+            ${{ runner.temp }}/korean-system-input-build-x86_64.tar.gz
+            ${{ runner.temp }}/korean-system-input-build-revision.txt
+            ${{ runner.temp }}/korean-system-input-build-head.txt
+          if-no-files-found: error
+          retention-days: 7
       # On the Intel runner every view SwiftUI draws through RenderBox aborted inside Metal: loading RenderBox's precompiled binary archive asks the paravirtual GPU for an architecture it does not report ("Target device architecture is nil"), and nothing of ours is on that stack. RenderBox's own switches skip the archive and the GPU, so these tests still lay out and draw there, on the CPU.
       - name: Test
         if: ${{ matrix.build == 'true' }}
