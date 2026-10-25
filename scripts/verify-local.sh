@@ -738,8 +738,7 @@ build_windows_host_library() {
         return 1
       fi
       # 为实际 Rust 目标传入绝对路径，不能只凭 Bash 的 PATH 推断原生 rustc 会选谁。
-      linker_key="CARGO_TARGET_${target^^}_LINKER"
-      linker_key="${linker_key//-/_}"
+      linker_key=$(printf 'CARGO_TARGET_%s_LINKER' "$target" | tr '[:lower:]-' '[:upper:]_')
       if command -v cygpath >/dev/null 2>&1; then linker=$(cygpath -w "$linker") || return 1; fi
       cargo_env=("$linker_key=$linker")
       echo "native: $linker_key=$linker"
