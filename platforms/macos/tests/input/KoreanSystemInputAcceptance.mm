@@ -25,8 +25,8 @@ static NSString *SelectedSource() {
 
 static BOOL AppKitEvents = NO;
 
-// 只把事件放进验收应用自己的 AppKit 队列，仍由已注册输入源经 IMK 进程处理。
-// 这条路径不向其他应用注入事件，也不需要全局事件投递权限。
+// 可选的 AppKit 队列只用于对照诊断，不能据此假定事件经过系统 IMK 路径。
+// 正式验收使用下方 CGEventPostToPid，只向验收应用自身投递系统事件。
 static NSString *Characters(CGKeyCode code) {
     NSDictionary *keys = @{@0:@"a", @11:@"b", @2:@"d", @5:@"g", @4:@"h", @40:@"k",
         @45:@"n", @12:@"q", @15:@"r", @1:@"s", @32:@"u", @9:@"v", @13:@"w", @7:@"x", @6:@"z",

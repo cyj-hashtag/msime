@@ -22,7 +22,7 @@ target/macos-isolated/korean-system-input-acceptance.app/Contents/MacOS/korean-s
 
 `--probe` 只报告前提，始终包含 `system_input_executed: false`。CI 的 `korean-system-input-prerequisites` 运行这一探测，不将它算作系统输入通过。
 
-独立 CI Mac 另外执行 `run-korean-system-ci.sh`：安装当前构建、注册系统输入源，分别验证缺省两套式与罗马字。`--appkit-events` 将按键放入验收应用自身的 AppKit 事件队列，经当前输入源连接独立 IMK 进程；不直接调用生产控制器或 Rust 库，也不向其他应用注入事件。报告记录事件路径、两个进程的 PID、实际文本和原生编辑框截图。注册或输入失败使 CI 失败，不将前提不足记为通过。
+独立 CI Mac 另外执行 `run-korean-system-ci.sh`：安装当前构建、注册系统输入源，分别验证缺省两套式与罗马字。默认通过 `CGEventPostToPid` 将系统事件投递给验收应用自身，由正常 IMK 路径处理；只检查已有投递权限，不请求或修改 TCC。`--appkit-events` 仅用于对照诊断，手工 AppKit 队列不能替代真实系统输入路径。程序不直接调用生产控制器或 Rust 库，也不向其他应用注入事件。报告记录事件路径、两个进程的 PID、实际文本和原生编辑框截图。注册或输入失败使 CI 失败，不将前提不足记为通过。
 
 汉字候选打开时还读取该输入法进程的可见窗口几何，检查窗口靠近原生编辑框光标（48 点邻域）且位于编辑器前方，再按数字选字。报告保存光标与窗口矩形；不依赖屏幕录制权限，不读取其他应用的窗口标题或图像。
 
