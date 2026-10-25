@@ -8,6 +8,30 @@ permissions:
   contents: read
   actions: read
 jobs:
+  settings-probe:
+    name: Settings appearance diagnostic
+    runs-on: macos-26
+    timeout-minutes: 5
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Compile the real settings appearance test
+        run: |
+          xcrun clang++ -std=c++17 -fobjc-arc -mmacosx-version-min=13.0 -Wall -Wextra -Werror -UNDEBUG \
+            platforms/macos/tests/settings/SettingsGlassTest.mm -framework AppKit -framework WebKit \
+            -o "$RUNNER_TEMP/settings-glass-test"
+      - name: Require ten consecutive passes
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          executable = pathlib.Path(os.environ['RUNNER_TEMP']) / 'settings-glass-test'
+          for iteration in range(10):
+              print(f'Settings appearance iteration {iteration + 1}/10', flush=True)
+              subprocess.run([str(executable)], check=True, timeout=20)
+          PY
   input-probe:
     name: Korean installed input diagnostic
     runs-on: macos-15-intel
