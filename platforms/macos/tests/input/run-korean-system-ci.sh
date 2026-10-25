@@ -67,6 +67,11 @@ if ! "$client" --enable-ci-source "$installed" > "$reports/enabled-sources.json"
   cat "$reports/enabled-sources.json" >&2
   # 系统拒绝 API 添加时，走用户实际使用的系统设置；由镜像已有的 XCTest 自动化会话执行。
   # 不改输入源数据库，也不配置或绕过隐私权限；实际启用状态仍交给 TIS 复核。
+  # 与生产安装器相同，设置扩展关闭时丢弃其旧模式清单缓存，打开后由系统重新生成。
+  if ! pgrep -x 'System Settings' >/dev/null; then
+    keyboard_cache="$(getconf DARWIN_USER_CACHE_DIR)com.apple.Keyboard-Settings.extension"
+    rm -f "$keyboard_cache"/com.apple.IntlDataCache.le*
+  fi
   if ! xcodebuild test -project "$root/platforms/macos/tests/input/SourceSetup/SourceSetup.xcodeproj" \
       -scheme SourceSetup -destination "platform=macOS,arch=$(uname -m)" \
       -derivedDataPath "$build/input-source-setup" -resultBundlePath "$reports/input-source-setup.xcresult" \
