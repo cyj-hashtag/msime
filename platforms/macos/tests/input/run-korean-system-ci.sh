@@ -54,8 +54,9 @@ codesign --force --deep --entitlements "$root/platforms/macos/resources/VoiceInp
 codesign --verify --deep --strict "$installed"
 codesign -dv --verbose=4 "$installed" > "$reports/signature.log" 2>&1
 registrar='/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
-"$registrar" -f "$installed"
 "$registrar" -u "$build/水杉输入法.app" || true
+# 同一 identifier 的构建记录必须先移除，再登记最终安装路径。
+"$registrar" -f "$installed"
 executable="$installed/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$installed/Contents/Info.plist")"
 if ! "$executable" --register-input-source > "$reports/registration.log" 2>&1; then
   cat "$reports/registration.log" >&2
@@ -64,7 +65,19 @@ if ! "$executable" --register-input-source > "$reports/registration.log" 2>&1; t
 fi
 if ! "$client" --enable-ci-source "$installed" > "$reports/enabled-sources.json"; then
   cat "$reports/enabled-sources.json" >&2
-  exit 1
+  # 系统拒绝 API 添加时，走用户实际使用的系统设置；由镜像已有的 XCTest 自动化会话执行。
+  # 不改输入源数据库，也不配置或绕过隐私权限；实际启用状态仍交给 TIS 复核。
+  if ! xcodebuild test -project "$root/platforms/macos/tests/input/SourceSetup/SourceSetup.xcodeproj" \
+      -scheme SourceSetup -destination "platform=macOS,arch=$(uname -m)" \
+      -derivedDataPath "$build/input-source-setup" -resultBundlePath "$reports/input-source-setup.xcresult" \
+      -test-timeouts-enabled YES -default-test-execution-time-allowance 60 -maximum-test-execution-time-allowance 90 \
+      -parallel-testing-enabled NO CODE_SIGN_IDENTITY=- > "$reports/input-source-setup.log" 2>&1; then
+    cat "$reports/input-source-setup.log" >&2
+    exit 1
+  fi
+  "$client" --enable-ci-source "$installed" > "$reports/enabled-after-settings.json" || {
+    cat "$reports/enabled-after-settings.json" >&2; exit 1;
+  }
 fi
 if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
 for layout in dubeolsik romaja; do

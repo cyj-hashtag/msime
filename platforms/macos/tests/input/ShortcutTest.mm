@@ -6841,6 +6841,9 @@ static void TestCapsLockTap() {
         reason:@"验收输入法修饰键计时器"];
     for (NSRunLoopMode mode in @[NSDefaultRunLoopMode, NSEventTrackingRunLoopMode, NSModalPanelRunLoopMode]) {
         CFRunLoopAddCommonMode(CFRunLoopGetMain(), (__bridge CFStringRef)mode);
+        // 偏好窗口首次进入事件循环会触发布局与 AppKit 初始化；先完成夹具准备再计时。
+        // 保留下面一秒的响应断言，不把这些启动回调算作已经送出的轻点。
+        [NSRunLoop.mainRunLoop runMode:mode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
         assert(![controller handleEvent:capsOff(10.0) client:client]);
         prefs.englishMode = NO;
         const NSUInteger releasesBefore = gCapsReleases;
@@ -12728,6 +12731,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--caps-lock") {
+            [NSApp finishLaunching];
             TestCapsLockTap();
             return 0;
         }

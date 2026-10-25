@@ -138,8 +138,8 @@ static int EnableCISource(NSString *bundlePath) {
     NSMutableArray *inventory = [NSMutableArray array];
     NSMutableArray *attempts = [NSMutableArray array];
     BOOL enabledParent = NO, enabledKorean = NO, enabledPrimary = NO;
-    // 模式的父输入法必须先实际启用；API 返回 noErr 不代表状态已经生效。
-    // 每次重取清单，避免用启用父输入法前的旧模式引用继续操作。
+    // Mavericks 起模式按独立输入源管理，父记录不能启用时仍须尝试实际韩语模式。
+    // 每次重取清单，API 返回 noErr 不代表状态已经生效。
     for (NSString *wanted in @[bundle.bundleIdentifier, koreanID]) {
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
         BOOL enabled = NO;
@@ -161,7 +161,6 @@ static int EnableCISource(NSString *bundlePath) {
             Pump(0.1);
         } while (deadline.timeIntervalSinceNow > 0);
         [attempts addObject:@{@"id":wanted, @"status":@(status), @"enabled":@(enabled)}];
-        if (!enabled) break;
     }
     CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
     if (sources) {
@@ -169,7 +168,10 @@ static int EnableCISource(NSString *bundlePath) {
             TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
             id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
             id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
-            [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+            id type = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceType);
+            id selectable = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable);
+            [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO,
+                @"type":type ?: @"", @"select_capable":selectable ?: @NO}];
             if ([identifier isEqual:bundle.bundleIdentifier]) enabledParent = [enabled boolValue];
             if ([identifier isEqual:koreanID]) enabledKorean = [enabled boolValue];
             if ([identifier isEqual:[bundle.bundleIdentifier stringByAppendingString:@".Hans"]]) enabledPrimary = [enabled boolValue];
@@ -181,10 +183,10 @@ static int EnableCISource(NSString *bundlePath) {
         @"korean_mode_enabled":@(enabledKorean), @"primary_mode_enabled":@(enabledPrimary),
         @"client_bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"",
         @"system_input_executed":@NO,
-        @"passed":@(enabledParent && enabledKorean)};
+        @"passed":@(enabledKorean)};
     NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
     puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
-    return enabledParent && enabledKorean ? 0 : 1;
+    return enabledKorean ? 0 : 1;
 }
 
 int main(int argc, const char *argv[]) {

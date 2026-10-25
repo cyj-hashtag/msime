@@ -690,8 +690,8 @@ fi
 
 # Windows 原生配置可能链接显式 MSVC 目标，而本机默认 Rust 是 GNU；必须重建缓存里真正链接的那一份。
 build_windows_host_library() {
-  local library profile_dir cargo_dir cargo_root profile target runtime build_status cargo_path msvc_tools host_arch target_arch
-  local target_args=()
+  local library profile_dir cargo_dir cargo_root profile target runtime build_status cargo_path msvc_tools host_arch target_arch linker linker_key
+  local target_args=() cargo_env=()
   library=$(sed -n 's/^MSIME_HOST_LIBRARY:[A-Z]*=//p' "$MSIME_NATIVE_BUILD/CMakeCache.txt" 2>/dev/null | head -1)
   if [ -z "$library" ]; then
     echo "native: $MSIME_NATIVE_BUILD/CMakeCache.txt names no MSIME_HOST_LIBRARY"
@@ -728,8 +728,25 @@ build_windows_host_library() {
     # Git Bash 的 link.exe 是硬链接工具；仅给 Cargo 调整顺序，其他脚本仍使用原来的 Unix 工具。
     if [ -f "$msvc_tools/link.exe" ]; then cargo_path="$msvc_tools:$cargo_path"; fi
   fi
+  case "${target:-}" in
+    *-pc-windows-msvc)
+      linker=$(sed -n 's/^CMAKE_LINKER:[A-Z]*=//p' "$MSIME_NATIVE_BUILD/CMakeCache.txt" | head -1)
+      if command -v cygpath >/dev/null 2>&1 && [ -n "$linker" ]; then linker=$(cygpath -u "$linker") || return 1; fi
+      [ -n "$linker" ] || linker="${msvc_tools:-}/link.exe"
+      if [ ! -f "$linker" ]; then
+        echo "native: MSVC linker is unavailable; configure CMAKE_LINKER or initialize the Visual Studio environment"
+        return 1
+      fi
+      # 为实际 Rust 目标传入绝对路径，不能只凭 Bash 的 PATH 推断原生 rustc 会选谁。
+      linker_key="CARGO_TARGET_${target^^}_LINKER"
+      linker_key="${linker_key//-/_}"
+      if command -v cygpath >/dev/null 2>&1; then linker=$(cygpath -w "$linker") || return 1; fi
+      cargo_env=("$linker_key=$linker")
+      echo "native: $linker_key=$linker"
+      ;;
+  esac
   echo "native: rebuilding $library"
-  PATH="$cargo_path" cargo build -p msime-host-api --locked --profile "$profile" "${target_args[@]}" 2>&1 |
+  env PATH="$cargo_path" "${cargo_env[@]}" cargo build -p msime-host-api --locked --profile "$profile" "${target_args[@]}" 2>&1 |
     tee "$MSIME_NATIVE_BUILD/host-library-build.log" | tail -2
   build_status=${PIPESTATUS[0]}
   if [ "$build_status" -ne 0 ]; then

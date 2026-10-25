@@ -180,6 +180,13 @@ jobs:
       - name: Check formatting
         if: ${{ matrix.architecture == 'arm64' }}
         run: if [[ -x scripts/format.sh ]]; then scripts/format.sh --check; else echo 'format script is not present in this branch; skipped'; fi
+      - name: Build system input-source setup fixture
+        if: ${{ matrix.build == 'true' && matrix.architecture == 'x86_64' }}
+        run: >-
+          xcodebuild build-for-testing
+          -project platforms/macos/tests/input/SourceSetup/SourceSetup.xcodeproj
+          -scheme SourceSetup -destination "platform=macOS,arch=x86_64"
+          -derivedDataPath "$PWD/build/input-source-setup" CODE_SIGN_IDENTITY=-
       # runner 上下文在 job 级 env 里不可用,所以在这里写进 GITHUB_ENV,后面的步骤都能读到。
       - name: Point the Sparkle download at the cache
         if: ${{ matrix.build == 'true' }}
@@ -257,7 +264,7 @@ jobs:
         if: ${{ matrix.build == 'true' }}
         run: |
           if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
-          ctest --no-tests=error --test-dir build --output-on-failure --timeout 20
+          python3 platforms/macos/tests/run_native_ci.py build "$RUNNER_TEMP/native-test-diagnostics"
       # 记录实际条件，不能把前提探测成功当作系统输入通过。
       - name: Record Korean system-input prerequisites
         if: ${{ always() && matrix.build == 'true' }}
@@ -279,6 +286,7 @@ jobs:
           path: |
             ${{ runner.temp }}/korean-system-input-prerequisites.json
             build/Testing/Temporary/LastTest.log
+            ${{ runner.temp }}/native-test-diagnostics/
             ${{ runner.temp }}/korean-system-input/
           if-no-files-found: warn
           retention-days: 7

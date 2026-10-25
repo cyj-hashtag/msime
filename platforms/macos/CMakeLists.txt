@@ -1197,6 +1197,8 @@ add_executable(candidate-row-layout-test tests/candidate/CandidateRowLayoutTest.
 target_link_libraries(candidate-row-layout-test PRIVATE ${MSIME_CONTROLLER_TEST_LIBS})
 target_compile_options(candidate-row-layout-test PRIVATE -fobjc-arc -Wall -Wextra -Werror -UNDEBUG "-F${MSIME_SPARKLE_ROOT}")
 add_test(NAME candidate-row-layout COMMAND candidate-row-layout-test)
+add_test(NAME candidate-user-geometry COMMAND candidate-row-layout-test --user-geometry)
+add_test(NAME candidate-host-appearance COMMAND candidate-row-layout-test --host-appearance)
 # 计时动效独立启动事件循环，不承接大排版矩阵的窗口与图层回调。
 add_test(NAME candidate-declared-motion COMMAND candidate-row-layout-test --declared-motion)
 # 大皮肤矩阵各自运行，保留 CI 的单项时限和全部排版断言。
@@ -1256,6 +1258,10 @@ target_include_directories(skin-preview-test PRIVATE src)
 target_compile_options(skin-preview-test PRIVATE -fobjc-arc -Wall -Wextra -Werror -UNDEBUG)
 target_link_libraries(skin-preview-test PRIVATE "-framework AppKit" "-framework CoreText")
 add_test(NAME skin-preview COMMAND skin-preview-test)
+# 252 组主题排版与绘制保留全部组合，各主题独立运行以沿用单项 20 秒预算。
+foreach(skin system shuishan light paper night ink)
+  add_test(NAME skin-preview-${skin} COMMAND skin-preview-test --theme-matrix ${skin})
+endforeach()
 add_executable(skin-settings-test tests/candidate/SkinSettingsTest.mm src/settings/AppearancePreferences.mm src/core/BoundedFileReader.mm src/candidate/CandidateSkin.cpp src/candidate/CandidateSkinPreviewView.mm src/candidate/SkinSettingsView.mm src/candidate/CandidateSkinAppearance.mm src/core/ChineseTextConversion.mm)
 foreach(translation_settings_consumer MSIMEClientInputMethod toolbar-visibility-preferences-test scheme-round-trip-preferences-test wubi-auto-commit-preferences-test local-mode-preferences-test candidate-appearance-defaults-test voice-hold-defaults-test skin-package-replace-test preferences-lifecycle-test shortcut-test skin-preview-test skin-settings-test)
   target_sources(${translation_settings_consumer} PRIVATE src/cloud/TranslationSettingsWindow.mm)
