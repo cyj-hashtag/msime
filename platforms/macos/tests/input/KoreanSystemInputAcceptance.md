@@ -17,7 +17,7 @@
 ```sh
 cmake --build target/macos-isolated --target korean-romaja-controller-test korean-system-input-acceptance
 ctest --test-dir target/macos-isolated -R '^korean-romaja-controller$' --output-on-failure
-target/macos-isolated/korean-system-input-acceptance --probe
+target/macos-isolated/korean-system-input-acceptance.app/Contents/MacOS/korean-system-input-acceptance --probe
 ```
 
 `--probe` 只报告前提，始终包含 `system_input_executed: false`。CI 的 `korean-system-input-prerequisites` 运行这一探测，不将它算作系统输入通过。
@@ -28,16 +28,18 @@ target/macos-isolated/korean-system-input-acceptance --probe
 
 验收先创建前台窗口、聚焦编辑框并激活其 `NSTextInputContext`，再选择输入源；TIS 选择失败时设置 AppKit 的 `selectedKeyboardInputSource` 属性。报告同时保存 TIS 状态、实际全局输入源与文本上下文输入源，实际输入源及全部文字断言仍须通过，不能将发出选择请求当作成功。
 
-报告另保存原输入源的 TIS 对照返回码，以及输入上下文实际提供的本 bundle 输入源。选源最多等待五秒；显式主模式回退若由产品自动切到韩语模式，可继续执行同样的输入断言。若活动窗口的两条选源路径仍停留在 ABC/US，结果为前提失败，必须在能实际选择本次已安装输入源的 Mac 登录会话中验收，不能按编译或控制器测试结果放行。
+验收客户端是带独立 bundle identifier 的 AppKit `.app`。CI 在启用源前初始化 AppKit，先启用父输入法，再重新枚举并启用韩语模式；每个源最多等待五秒，保存逐项返回码及实际启用状态。父输入法或韩语模式仍未启用时直接失败，不能用默认启用的 Hans 代替。
+
+报告另保存原输入源的 TIS 对照返回码，以及输入上下文实际提供的本 bundle 输入源。选源最多等待五秒；若活动窗口的两条选源路径仍停留在 ABC/US，结果为前提失败，必须在能实际选择本次已安装输入源的 Mac 登录会话中验收，不能按编译或控制器测试结果放行。
 
 已安装输入源步骤在 macOS 15 Intel CI 中执行；涉及此入口的 PR 必须启动该构建，不能因普通 PR 的 Intel 默认省略而跳过。macOS 26 arm64 继续执行原生 CTest 和前提探测，其新模式启用限制不记为系统验收通过。
 
-CI 优先选择实际启用的 `.Korean`。仅在它未启用时显式传入 `--primary-source`，选择已默认启用的 `.Hans` 主输入源，偏好仍为 `scheme: korean`，尝试生产控制器的主模式回退路径；仍须通过独立 IMK 进程完成全部韩语输入断言。TIS 启用调用可能返回成功但模式仍 disabled；`enabled-sources.json` 单独记录实际状态，不能将主输入源验收当作韩语菜单入口已启用。手动入口省略此参数，继续要求已添加的 `.Korean` 输入源。
+`enabled-sources.json` 的 `passed` 只在父输入法及 `.Korean` 均实际启用时为真。新输入法在当前登录会话中无法启用时，需要预先安装且已重新登录的 Mac；不改 TCC、信任设置或系统输入源数据库，也不将注册调用返回成功当成系统验收通过。
 
 将下面的输入法路径替换为本次构建实际安装的绝对路径，报告路径也必须为绝对路径。先保留缺省两套式并执行：
 
 ```sh
-target/macos-isolated/korean-system-input-acceptance dubeolsik \
+target/macos-isolated/korean-system-input-acceptance.app/Contents/MacOS/korean-system-input-acceptance dubeolsik \
   "$HOME/Library/Input Methods/水杉输入法.app" \
   "$PWD/korean-system-dubeolsik.json"
 ```
@@ -45,7 +47,7 @@ target/macos-isolated/korean-system-input-acceptance dubeolsik \
 再从设置界面保存罗马字布局，执行：
 
 ```sh
-target/macos-isolated/korean-system-input-acceptance romaja \
+target/macos-isolated/korean-system-input-acceptance.app/Contents/MacOS/korean-system-input-acceptance romaja \
   "$HOME/Library/Input Methods/水杉输入法.app" \
   "$PWD/korean-system-romaja.json"
 ```

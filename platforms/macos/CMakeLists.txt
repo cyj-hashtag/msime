@@ -1069,7 +1069,10 @@ add_test(NAME korean-romaja-controller COMMAND korean-romaja-controller-test)
 set_tests_properties(korean-romaja-controller PROPERTIES TIMEOUT 60)
 
 # 系统输入验收独立于控制器测试：CI 只编译并探测条件，实际运行需要已安装输入源的桌面会话。
-add_executable(korean-system-input-acceptance tests/input/KoreanSystemInputAcceptance.mm)
+add_executable(korean-system-input-acceptance MACOSX_BUNDLE tests/input/KoreanSystemInputAcceptance.mm)
+set_target_properties(korean-system-input-acceptance PROPERTIES
+  MACOSX_BUNDLE_GUI_IDENTIFIER "app.msime.tests.KoreanSystemInputAcceptance"
+  MACOSX_BUNDLE_BUNDLE_NAME "MSIME Korean System Input Acceptance")
 target_compile_options(korean-system-input-acceptance PRIVATE -fobjc-arc -Wall -Wextra -Werror)
 target_link_libraries(korean-system-input-acceptance PRIVATE "-framework AppKit" "-framework Carbon")
 add_test(NAME korean-system-input-prerequisites COMMAND korean-system-input-acceptance --probe)

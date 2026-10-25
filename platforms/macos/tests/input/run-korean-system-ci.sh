@@ -10,6 +10,29 @@ build="$(cd "$build" && pwd)"
 reports="${2:?需要报告目录}"
 mkdir -p "$reports"
 reports="$(cd "$reports" && pwd)"
+python3 - "$reports/login-session.json" <<'PY'
+import json, os, pathlib, subprocess, sys
+def output(*args):
+    result = subprocess.run(args, text=True, capture_output=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+parents, pid = [], os.getpid()
+for _ in range(10):
+    if pid <= 1:
+        break
+    parents.append({"pid": pid, "uid": output("ps", "-p", str(pid), "-o", "uid="),
+                    "name": output("ps", "-p", str(pid), "-o", "comm=")})
+    parent = output("ps", "-p", str(pid), "-o", "ppid=")
+    if not parent:
+        break
+    pid = int(parent)
+pathlib.Path(sys.argv[1]).write_text(json.dumps({"uid": os.getuid(), "manager": output("launchctl", "managername"),
+    "console_uid": output("stat", "-f", "%u", "/dev/console"),
+    "automatic_login_user": output("defaults", "read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"),
+    "parents": parents}, indent=2))
+PY
+client_bundle="$build/korean-system-input-acceptance.app"
+client="$client_bundle/Contents/MacOS/korean-system-input-acceptance"
+codesign --force --sign - "$client_bundle"
 installed="$HOME/Library/Input Methods/MSIME-Korean-CI.app"
 state="$HOME/Library/Application Support/app.msime.macos"
 options="$state/runtime-options.json"
@@ -39,7 +62,10 @@ if ! "$executable" --register-input-source > "$reports/registration.log" 2>&1; t
   printf '%s\n' '{"passed":false,"system_input_executed":false,"blocked_by":"input source registration failed"}' > "$reports/registration.json"
   exit 1
 fi
-"$build/korean-system-input-acceptance" --enable-ci-source "$installed" > "$reports/enabled-sources.json"
+if ! "$client" --enable-ci-source "$installed" > "$reports/enabled-sources.json"; then
+  cat "$reports/enabled-sources.json" >&2
+  exit 1
+fi
 if [[ "$(uname -m)" == x86_64 ]]; then export RB_USE_BINARY_ARCHIVE=0 RB_DISABLE_GPU=1; fi
 for layout in dubeolsik romaja; do
   python3 - "$options" "$reports/profile-$layout" "$layout" <<'PY'
@@ -69,13 +95,9 @@ PY
     echo '已安装输入法启动后立即退出，未执行系统输入。' >&2
     exit 1
   fi
-  python3 - "$build/korean-system-input-acceptance" "$layout" "$installed" "$reports/$layout.json" "$reports/enabled-sources.json" <<'PY'
-import json, pathlib, subprocess, sys
-source = json.loads(pathlib.Path(sys.argv[-1]).read_text())
-flags = ["--appkit-events"]
-if not source["korean_mode_enabled"]:
-    flags.append("--primary-source")
-subprocess.run([*sys.argv[1:-1], *flags], check=True, timeout=90)
+  python3 - "$client" "$layout" "$installed" "$reports/$layout.json" <<'PY'
+import subprocess, sys
+subprocess.run([*sys.argv[1:], "--appkit-events"], check=True, timeout=90)
 PY
   kill "$server_pid" 2>/dev/null || true
   wait "$server_pid" 2>/dev/null || true

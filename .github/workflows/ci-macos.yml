@@ -262,8 +262,9 @@ jobs:
       - name: Record Korean system-input prerequisites
         if: ${{ always() && matrix.build == 'true' }}
         run: |
-          if [[ -x build/korean-system-input-acceptance ]]; then
-            build/korean-system-input-acceptance --probe > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
+          client=build/korean-system-input-acceptance.app/Contents/MacOS/korean-system-input-acceptance
+          if [[ -x "$client" ]]; then
+            "$client" --probe > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
           else
             printf '%s\n' '{"system_input_executed":false,"blocked_by":"build failed"}' > "$RUNNER_TEMP/korean-system-input-prerequisites.json"
           fi

@@ -130,43 +130,61 @@ static int EnableCISource(NSString *bundlePath) {
         return 2;
     NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
     if (!bundle.bundleIdentifier) return 2;
+    [NSApplication sharedApplication];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp finishLaunching];
     NSString *koreanID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
     NSDictionary *filter = @{(__bridge NSString *)kTISPropertyBundleID:bundle.bundleIdentifier};
     NSMutableArray *inventory = [NSMutableArray array];
-    BOOL enabledKorean = NO, enabledPrimary = NO;
-    OSStatus status = noErr;
-    CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
-    if (sources) {
-        for (NSString *wanted in @[bundle.bundleIdentifier, koreanID]) {
+    NSMutableArray *attempts = [NSMutableArray array];
+    BOOL enabledParent = NO, enabledKorean = NO, enabledPrimary = NO;
+    // 模式的父输入法必须先实际启用；API 返回 noErr 不代表状态已经生效。
+    // 每次重取清单，避免用启用父输入法前的旧模式引用继续操作。
+    for (NSString *wanted in @[bundle.bundleIdentifier, koreanID]) {
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
+        BOOL enabled = NO;
+        OSStatus status = fnfErr;
+        do {
+            CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+            if (!sources) break;
             for (CFIndex i = 0; i < CFArrayGetCount(sources); ++i) {
                 TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
                 NSString *identifier = (__bridge NSString *)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
                 if (![identifier isEqual:wanted]) continue;
-                status = TISEnableInputSource(source);
-                if (status != noErr) break;
+                CFBooleanRef value = (CFBooleanRef)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
+                enabled = value && CFBooleanGetValue(value);
+                status = enabled ? noErr : TISEnableInputSource(source);
+                break;
             }
-            if (status != noErr) break;
-        }
-        CFRelease(sources);
+            CFRelease(sources);
+            if (enabled || status != noErr) break;
+            Pump(0.1);
+        } while (deadline.timeIntervalSinceNow > 0);
+        [attempts addObject:@{@"id":wanted, @"status":@(status), @"enabled":@(enabled)}];
+        if (!enabled) break;
     }
-    sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
+    CFArrayRef sources = TISCreateInputSourceList((__bridge CFDictionaryRef)filter, true);
     if (sources) {
         for (CFIndex i = 0; i < CFArrayGetCount(sources); ++i) {
             TISInputSourceRef source = (TISInputSourceRef)CFArrayGetValueAtIndex(sources, i);
             id identifier = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
             id enabled = (__bridge id)TISGetInputSourceProperty(source, kTISPropertyInputSourceIsEnabled);
             [inventory addObject:@{@"id":identifier ?: @"", @"enabled":enabled ?: @NO}];
+            if ([identifier isEqual:bundle.bundleIdentifier]) enabledParent = [enabled boolValue];
             if ([identifier isEqual:koreanID]) enabledKorean = [enabled boolValue];
             if ([identifier isEqual:[bundle.bundleIdentifier stringByAppendingString:@".Hans"]]) enabledPrimary = [enabled boolValue];
         }
         CFRelease(sources);
     }
     NSDictionary *report = @{@"bundle_id":bundle.bundleIdentifier, @"sources":inventory,
-        @"enable_status":@(status), @"korean_mode_enabled":@(enabledKorean),
-        @"primary_mode_enabled":@(enabledPrimary), @"passed":@(enabledPrimary)};
+        @"enable_attempts":attempts, @"parent_enabled":@(enabledParent),
+        @"korean_mode_enabled":@(enabledKorean), @"primary_mode_enabled":@(enabledPrimary),
+        @"client_bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"",
+        @"system_input_executed":@NO,
+        @"passed":@(enabledParent && enabledKorean)};
     NSData *data = [NSJSONSerialization dataWithJSONObject:report options:NSJSONWritingPrettyPrinted error:nil];
     puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
-    return enabledPrimary ? 0 : 1;
+    return enabledParent && enabledKorean ? 0 : 1;
 }
 
 int main(int argc, const char *argv[]) {
@@ -180,25 +198,22 @@ int main(int argc, const char *argv[]) {
             puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
             return 0;
         }
-        if ((argc != 4 && argc != 5 && argc != 6) || (argc >= 5 && strcmp(argv[4], "--appkit-events") != 0) ||
-            (argc == 6 && (strcmp(argv[5], "--primary-source") != 0 ||
-                          ![NSProcessInfo.processInfo.environment[@"GITHUB_ACTIONS"] isEqual:@"true"])) ||
+        if ((argc != 4 && argc != 5) || (argc == 5 && strcmp(argv[4], "--appkit-events") != 0) ||
             (strcmp(argv[1], "romaja") != 0 && strcmp(argv[1], "dubeolsik") != 0)) {
             fputs("用法：korean-system-input-acceptance <romaja|dubeolsik> <已安装输入法.app绝对路径> <报告.json绝对路径> [--appkit-events]\n", stderr);
             return 2;
         }
-        AppKitEvents = argc >= 5;
+        AppKitEvents = argc == 5;
         NSString *layout = @(argv[1]), *bundlePath = @(argv[2]), *output = @(argv[3]);
         if (!bundlePath.isAbsolutePath || !output.isAbsolutePath) return 2;
         NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
-        // 韩语入口未加入系统菜单时，生产控制器沿用主模式并按偏好使用韩语方案。
-        // CI 显式验收这一正常路径，报告不把它写成韩语菜单模式已启用。
-        NSString *sourceID = [bundle.bundleIdentifier stringByAppendingString:argc == 6 ? @".Hans" : @".Korean"];
+        NSString *sourceID = [bundle.bundleIdentifier stringByAppendingString:@".Korean"];
         NSMutableArray *results = [NSMutableArray array];
         NSMutableDictionary *report = [@{@"layout":layout, @"bundle_path":bundlePath, @"cases":results,
             @"event_transport":AppKitEvents ? @"appkit_event_queue" : @"cg_event_post",
             @"requested_input_source":sourceID,
             @"bundle_revision":bundle.infoDictionary[@"MSIMEInputSourceRevision"] ?: @"",
+            @"client_bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"",
             @"system_input_executed":@NO, @"passed":@NO} mutableCopy];
         TISInputSourceRef previous = nullptr;
         NSWindow *window = nil;
@@ -268,11 +283,10 @@ int main(int argc, const char *argv[]) {
                 first.inputContext.selectedKeyboardInputSource = sourceID;
                 report[@"selection_transport"] = @"NSTextInputContext.selectedKeyboardInputSource";
             }
-            // 冷启动可异步恢复模式；主模式回退若已被产品切成韩语，同样必须继续核对真实输入。
+            // 冷启动可异步恢复模式；只接受本次验收请求的韩语输入源。
             BOOL (^sourceReady)(void) = ^BOOL {
                 NSString *actual = SelectedSource();
-                return [actual isEqual:sourceID] || (argc == 6 &&
-                    [actual isEqual:[bundle.bundleIdentifier stringByAppendingString:@".Korean"]]);
+                return [actual isEqual:sourceID];
             };
             NSDate *sourceDeadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
             while (!sourceReady() && sourceDeadline.timeIntervalSinceNow > 0) Pump(0.05);
