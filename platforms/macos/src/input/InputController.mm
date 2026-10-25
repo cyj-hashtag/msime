@@ -418,8 +418,8 @@ static NSString *CandidateDisplayWithBadges(NSDictionary *candidate, BOOL tradit
     const BOOL integerSource = [source isKindOfClass:NSNumber.class] &&
                                CFGetTypeID((__bridge CFTypeRef)source) != CFBooleanGetTypeID() &&
                                !CFNumberIsFloatType((__bridge CFNumberRef)source);
-    // Engine CandidateSource MixedJapanese=13：日文混输行是日文，不做简转繁（学校不能显示成學校）；上屏时 input-runtime 也为它关掉 script_conversion。
-    if (!(integerSource && [source isEqual:@13])) text = MSIMEChineseOutputString(text, traditional);
+    // 来源 13 是日文，来源 18 已由运行时逐段转换；两者都不能再次整行简转繁。
+    if (!(integerSource && ([source isEqual:@13] || [source isEqual:@18]))) text = MSIMEChineseOutputString(text, traditional);
     // 来源与固定排位角标只参与显示，不改变候选身份或上屏内容。
     NSString *badge = CandidateSourceBadge(candidate, aiBadge);
     if (fixedBadge.length && MSIMECandidateIsFixedPosition(candidate[@"fixed_position"]))
@@ -1109,35 +1109,48 @@ static CFMutableDictionaryRef MSIMECapsLockHIDMatching(uint32_t usage) {
     return matching;
 }
 
-static void MSIMEEnsureCapsLockHIDTracking() {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-        if (!manager) return;
-        CFMutableDictionaryRef capsLock = MSIMECapsLockHIDMatching(kHIDUsage_KeyboardCapsLock);
-        CFMutableDictionaryRef lockingCapsLock = MSIMECapsLockHIDMatching(kHIDUsage_KeyboardLockingCapsLock);
-        const void *matches[] = {capsLock, lockingCapsLock};
-        CFArrayRef matching = CFArrayCreate(kCFAllocatorDefault, matches, 2, &kCFTypeArrayCallBacks);
-        IOHIDManagerSetInputValueMatchingMultiple(manager, matching);
-        CFRelease(matching);
-        CFRelease(capsLock);
-        CFRelease(lockingCapsLock);
-        IOHIDManagerRegisterDeviceMatchingCallback(manager, &MSIMECapsLockHIDDeviceMatched, nullptr);
-        IOHIDManagerRegisterDeviceRemovalCallback(manager, &MSIMECapsLockHIDDeviceRemoved, nullptr);
-        IOHIDManagerRegisterInputValueCallback(manager, &MSIMECapsLockHIDInputValue, nullptr);
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-        if (IOHIDManagerOpen(manager, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
-            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-            CFRelease(manager);
-            return;
-        }
-    });
+// 只在按下 Caps Lock 时设备没报实体按住位、HID 也还没有结果时调用（observeCapsLockTap），报这个位的内置键盘不会走到这里，也就不会被要求「输入监控」授权。打开键盘的 HID 管理器需要这项授权：未询问时请系统询问一次，授权之前不打开，免得在用户没准备时弹框；没打开就留到下一次这样的按键再试，用户之后在系统设置里允许也不必重启输入法。只在主线程调用。
+static void MSIMEStartCapsLockHIDTracking() {
+    static IOHIDManagerRef tracking = nullptr;
+    static bool accessRequested = false;
+    if (tracking) return;
+    const IOHIDAccessType access = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+    if (access == kIOHIDAccessTypeUnknown && !accessRequested) {
+        accessRequested = true;
+        // 询问框由系统弹出，放到后台队列，主线程不等用户作答。
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+        });
+        return;
+    }
+    if (access != kIOHIDAccessTypeGranted) return;
+    IOHIDManagerRef manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (!manager) return;
+    CFMutableDictionaryRef capsLock = MSIMECapsLockHIDMatching(kHIDUsage_KeyboardCapsLock);
+    CFMutableDictionaryRef lockingCapsLock = MSIMECapsLockHIDMatching(kHIDUsage_KeyboardLockingCapsLock);
+    const void *matches[] = {capsLock, lockingCapsLock};
+    CFArrayRef matching = CFArrayCreate(kCFAllocatorDefault, matches, 2, &kCFTypeArrayCallBacks);
+    IOHIDManagerSetInputValueMatchingMultiple(manager, matching);
+    CFRelease(matching);
+    CFRelease(capsLock);
+    CFRelease(lockingCapsLock);
+    IOHIDManagerRegisterDeviceMatchingCallback(manager, &MSIMECapsLockHIDDeviceMatched, nullptr);
+    IOHIDManagerRegisterDeviceRemovalCallback(manager, &MSIMECapsLockHIDDeviceRemoved, nullptr);
+    IOHIDManagerRegisterInputValueCallback(manager, &MSIMECapsLockHIDInputValue, nullptr);
+    IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    if (IOHIDManagerOpen(manager, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
+        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+        CFRelease(manager);
+        return;
+    }
+    tracking = manager;
 }
+// 测试换成计数的：单测不能打开跑测试那台机器的真实键盘，也不能替它申请授权。
+static void (*MSIMECapsLockHIDStart)() = &MSIMEStartCapsLockHIDTracking;
 
 static bool MSIMEReadCapsLockHIDState(bool *known) {
-    MSIMEEnsureCapsLockHIDTracking();
     const bool stateKnown = MSIMECapsLockHIDStateKnown.load(std::memory_order_acquire);
     if (known) *known = stateKnown;
     return MSIMECapsLockHIDStateHeld.load(std::memory_order_acquire);
@@ -2457,14 +2470,19 @@ static const char *MSIMESmartPunctuationScalarClass(uint32_t scalar) {
 //
 // 网格不经 View 的分页：打开时经 msime_client_all_candidates 复制一次全部候选，选择时用 msime_client_select_any_candidate 带着复制时的一代，Engine 拒绝过期的一代。每次重画前对照一次当前视图：组字没变而候选换了一代（云候选、AI 回答、整句重排到达）就按新的一代重载，组字变了或这一面不该再有网格（偏好关掉、改成竖排、切到英文、候选列表打开、失焦）就收起，和 Android、iOS 的展开面板一样。
 
-// 这时候能不能展开：偏好打开、横排、正在组字而且不止一页，没有打开候选列表（韩文汉字、注音）或释义页。
-- (BOOL)expandedCandidatesOffered {
+// 网格能否继续显示：偏好打开、横排、没有打开候选列表（韩文汉字、注音）或释义页；新展开入口另外要求多页。
+- (BOOL)expandedCandidatesAllowed {
     if (!_session || !_activeClient || !_appearance.expandCandidates || _appearance.vertical || _appearance.englishMode) return NO;
     if ([self glossSensePageActive] || MSIMECandidateListOpen(_view) || !MSIMEStrictBoolean(_view[@"focused"])) return NO;
     NSAppearance *current = [_appearance candidateAppearanceOverride] ?: _panel.effectiveAppearance ?: NSApp.effectiveAppearance;
     NSString *match = [current bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
     const auto skin = [_appearance candidateWindowSkinForDark:[match isEqual:NSAppearanceNameDarkAqua]];
     if (skin.expandPanel.has_value() && !*skin.expandPanel) return NO;
+    return YES;
+}
+
+- (BOOL)expandedCandidatesOffered {
+    if (![self expandedCandidatesAllowed]) return NO;
     NSUInteger pageCount = 0;
     return MSIMEStrictUnsignedIntegerValue(_view[@"page_count"], &pageCount) && pageCount > 1;
 }
@@ -2536,10 +2554,15 @@ static const char *MSIMESmartPunctuationScalarClass(uint32_t scalar) {
 
 // 打开网格，高亮停在普通候选窗正高亮的那一个上。没有更多候选、或者网格画不出来（光标位置无效）时返回 NO，调用方照旧处理这个键。
 - (BOOL)openExpandedCandidates {
-    if (_expandedCandidates || ![self expandedCandidatesOffered]) return NO;
+    return [self openExpandedCandidatesAfterSelection:NO];
+}
+
+// 部分选词沿用已展开的展示方式，剩一页也不要求用户重新展开。
+- (BOOL)openExpandedCandidatesAfterSelection:(BOOL)afterSelection {
+    if (_expandedCandidates || !(afterSelection ? [self expandedCandidatesAllowed] : [self expandedCandidatesOffered])) return NO;
     NSArray<NSDictionary *> *entries = [self expandedCandidatesFromSnapshot:[_session allCandidatesWithError:nil]];
     NSArray *page = [_view[@"candidates"] isKindOfClass:NSArray.class] ? _view[@"candidates"] : @[];
-    if (entries.count <= page.count) return NO;
+    if (!entries.count || (!afterSelection && entries.count <= page.count)) return NO;
     const NSUInteger columns = MAX((NSUInteger)1, (NSUInteger)_appearance.pageSize);
     // 没有高亮时停在当前这一页的第一个。
     NSUInteger pageIndex = 0;
@@ -2603,12 +2626,24 @@ static const char *MSIMESmartPunctuationScalarClass(uint32_t scalar) {
     const BOOL current = MSIMECurrentCandidateIdentity(identifier, _view) && [identifier[@"generation"] isEqual:_expandedGeneration] &&
         MSIMEStrictUnsignedInteger(identifier[@"generation"], &generation) &&
         MSIMEStrictUnsignedIntegerValue(identifier[@"index"], &engineIndex);
+    NSNumber *sessionID = _view[@"session"];
     [self discardExpandedCandidates];
     if (!current) { [self renderCandidates]; return; }
     if (pointer) [self reportPointerToLifecycle];
     NSDictionary *selected = [_session selectAnyCandidateGeneration:generation index:engineIndex error:nil];
-    if (selected) [self apply:selected];
-    else [self renderCandidates];
+    if (!selected) { [self renderCandidates]; return; }
+    id client = _activeClient;
+    id session = _session;
+    const uint64_t sequence = _applySequence;
+    [self apply:selected];
+    NSDictionary *nextView = selected[@"view"];
+    // 上屏回调可能重入输入或切换客户端，旧选择不能重新打开已经结束的网格。
+    if (_applySequence == sequence + 1 && _activeClient == client && _session == session &&
+        MSIMEStrictBoolean(selected[@"handled"]) && ![selected[@"commit"] length] &&
+        [nextView[@"session"] isEqual:sessionID] && [_view[@"session"] isEqual:sessionID] &&
+        [nextView[@"editing_text"] length] &&
+        [MSIMEExpandedComposition(_view) isEqual:MSIMEExpandedComposition(nextView)])
+        [self openExpandedCandidatesAfterSelection:YES];
 }
 
 // 普通滚轮保留按行定位；触控板与惯性由 NSScrollView 处理。
@@ -4070,6 +4105,8 @@ static const NSTimeInterval kSettledRerankPoll = 1.0 / 60.0;
         traditionalChineseOutputEnabled:_appearance.traditionalOutput];
 }
 - (void)appearanceChanged:(NSNotification *)notification {
+    NSDictionary *outputView = [_session setMultilingualOutput:_appearance.traditionalOutput error:nil];
+    if (outputView) _view = outputView;
     _expandedViewportHeight = 0;
     _preferenceLoadState.reset(); // Local edits invalidate older disk reads.
     if (!_appearance.cloudCandidatesEnabled) [self cancelCloudCandidates];
@@ -4236,8 +4273,11 @@ static __weak MSIMEInputController *MSIMEQueuedPreferenceSaver;
         [self cancelCapsLockTap];
         // 只有大写锁定从关变开才可能是轻点；开着时按它是关掉大写锁定，照常处理，不切换。
         if (!capsLock || _capsLock || !sender || !_appearance.capsLockTapShortcut) return NO;
-        // 设备没有提供实体按住位时保留系统大写锁定，不能把缺失状态当作已经松手。
-        if (!(event.modifierFlags & NX_ALPHASHIFT_STATELESS_MASK) && !MSIMECapsLockKeyHeld()) return NO;
+        // 设备没有提供实体按住位时保留系统大写锁定，不能把缺失状态当作已经松手；同时开始（或重试）HID 监听，拿到结果之后的轻点才能判定。
+        if (!(event.modifierFlags & NX_ALPHASHIFT_STATELESS_MASK) && !MSIMECapsLockKeyHeld()) {
+            MSIMECapsLockHIDStart();
+            return NO;
+        }
         _capsLockTap.press(MSIMECapsLockNow(), true, false, (event.modifierFlags & others) != 0);
         if (!_capsLockTap.armed()) return NO;
         __weak MSIMEInputController *weakSelf = self;
@@ -8772,7 +8812,7 @@ static const char *MSIMEMotionPresetName(msime::mac::SkinAnimationPreset preset)
                 NSString *badge = skin.decorationCandidate->stripBadge ? @"" : CandidateSourceBadge(candidate, _aiBadgeString);
                 word = MSIMEChineseOutputString([text stringByAppendingString:badge],
                     _appearance.traditionalOutput && MSIMEScriptConversionApplies(_view) &&
-                    ![candidate[@"source"] isEqual:@13]);
+                    ![candidate[@"source"] isEqual:@13] && ![candidate[@"source"] isEqual:@18]);
             }
         }
     }

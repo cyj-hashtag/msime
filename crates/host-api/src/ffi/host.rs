@@ -202,6 +202,9 @@ pub unsafe extern "C" fn msime_client_prepare_host(
         /// 版本 id，缺省是 full；见 `prepare_host_configuration_for_edition`。
         #[serde(default)]
         edition: Option<String>,
+        /// 已发布的 runtime-options.json；给了时把这次准备的代次写进去，见 [`publish_prepared_dictionaries`]。
+        #[serde(default)]
+        runtime_options: Option<String>,
     }
     response(|| {
         if options.is_null() || length > 16384 {
@@ -213,7 +216,11 @@ pub unsafe extern "C" fn msime_client_prepare_host(
             serde_json::from_slice(bytes).map_err(|_| "invalid bootstrap document")?;
         let resources = std::path::Path::new(&options.resources);
         let state = std::path::Path::new(&options.state_root);
-        if !resources.is_absolute() || !state.is_absolute() {
+        let published = options.runtime_options.as_deref().map(std::path::Path::new);
+        if !resources.is_absolute()
+            || !state.is_absolute()
+            || published.is_some_and(|path| !path.is_absolute())
+        {
             return Err("bootstrap paths must be absolute".into());
         }
         let edition = match options.edition.as_deref() {
@@ -222,7 +229,17 @@ pub unsafe extern "C" fn msime_client_prepare_host(
         };
         let document = prepare_host_configuration_for_edition(resources, state, edition)
             .map_err(|e| e.to_string())?;
-        serde_json::from_str(&document).map_err(|e| e.to_string())
+        let document: Value = serde_json::from_str(&document).map_err(|e| e.to_string())?;
+        // 发布失败不挡住宿主启动：会话照样用这份文档，设置窗口和 TIP 留在旧代次上，下次启动再试。
+        if let Some(path) = published {
+            if let Err(error) = publish_prepared_dictionaries(path, &document) {
+                crate::diagnostics::report(
+                    "runtime options generation not published",
+                    &error.to_string(),
+                );
+            }
+        }
+        Ok(document)
     })
 }
 
@@ -1324,6 +1341,9 @@ struct SkinResourceRequest {
     id: String,
     relative: String,
     kind: String,
+    /// `"base64"` returns the bytes as one base64 string, `bytesBase64`, instead of the `bytes` array. Absent keeps the array for older callers; every msime host asks for base64.
+    #[serde(default)]
+    encoding: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1389,6 +1409,8 @@ struct SkinResourceResponse {
 /// call, so a stale catalog cannot turn this endpoint into an arbitrary file
 /// reader. `kind` is deliberately checked here as well: a WebView image reader
 /// must never receive CSS or a font by mistake.
+///
+/// The default `bytes` array costs about 64 bytes of heap per resource byte while the response is built (a `serde_json::Value` per byte, measured on a 1 MiB image), and a JSON parser on the host side spends tens more turning it back into bytes. The iOS keyboard extension reads candidate-skin images under the system's per-extension memory limit, where that spike for a single 1 MiB image is larger than everything else the keyboard holds, so it asks for `encoding: "base64"`. So do the Android and HarmonyOS keyboards, the HarmonyOS settings page and both Windows settings apps: at the 8 MiB resource limit the array is about 512 MiB on this side alone. The array stays the default so an older caller keeps working.
 /// # Safety
 /// `request` points to `length` readable UTF-8 JSON bytes. Null is rejected.
 #[no_mangle]
@@ -1407,6 +1429,11 @@ pub unsafe extern "C" fn msime_client_skin_resource(
         if request.kind != "image" && request.kind != "font" {
             return Err("unsupported skin resource kind".into());
         }
+        let as_base64 = match request.encoding.as_deref() {
+            None => false,
+            Some("base64") => true,
+            Some(_) => return Err("unsupported skin resource encoding".into()),
+        };
         if !Path::new(&request.directory).is_absolute() {
             return Err("skin directory must be absolute".into());
         }
@@ -1423,6 +1450,13 @@ pub unsafe extern "C" fn msime_client_skin_resource(
         };
         if !resource.content_type.starts_with(expected) {
             return Err("skin resource type mismatch".into());
+        }
+        if as_base64 {
+            use base64::Engine as _;
+            return Ok(json!({
+                "contentType": resource.content_type,
+                "bytesBase64": base64::engine::general_purpose::STANDARD.encode(&resource.bytes),
+            }));
         }
         serde_json::to_value(SkinResourceResponse {
             content_type: resource.content_type,

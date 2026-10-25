@@ -496,7 +496,9 @@ bool store_input_scheme(const std::filesystem::path &directory,
   }
 }
 // Ctrl+Shift+J 交给工作线程的一次请求，目标由 toggle_japanese_scheme 从存储算出，所以不带参数。
-struct JapaneseToggleRequest {};
+struct JapaneseToggleRequest {
+  std::shared_ptr<std::promise<std::optional<msime::windows::PreferenceSnapshot>>> completion;
+};
 // Ctrl+Shift+J：从存储读出偏好，按 Engine 实际运行的方案算出目标和要记的 last_chinese_scheme（scheme::japanese_toggle_write），带 revision 写回，和 store_input_scheme 一样维护 last_chinese_scheme。在工作线程上运行，读和写之间别的界面写进去的新修订会让保存失败，这一次按键就不切换，不会覆盖别人的写入。成功时返回写进去的方案，不切换或失败时为空。
 std::optional<std::string> toggle_japanese_scheme(
     const std::filesystem::path &directory,
@@ -946,6 +948,9 @@ int wmain(int argc, wchar_t **argv) {
     // 不是 full 的版本把版本 id 交给宿主库：它按版本选资源锁、收窄方案，并在状态根里记下版本。full 不带这个键，请求与引入版本之前相同。
     if constexpr (!MSIME_EDITION_IS_FULL)
       bootstrap_document["edition"] = MSIME_EDITION_ID;
+    // 会话用的是这里准备出的文档，runtime-options.json 却只在首次运行时写下。设置窗口、msime-mcp 和各应用里的 TIP 都照那份文件工作，升级换了词库代次后它们还在旧代次上，设置里新增的词条写进旧代次，输入法看不到（#9434）。让宿主库把这次的代次写回文件。
+    if (production)
+      bootstrap_document["runtime_options"] = config_path.u8string();
     const auto bootstrap = bootstrap_document.dump();
     auto response = msime::host_api::own_string(
         msime_client_prepare_host(
@@ -1060,11 +1065,19 @@ int wmain(int argc, wchar_t **argv) {
         std::make_shared<std::pair<std::mutex, std::function<void()>>>();
     SingleClickWorker<JapaneseToggleRequest> japanese_toggles(
         [directory = config.state_root, language_dictionaries, tray_preferences,
-         tray_preferences_mutex, wake_preferences](const JapaneseToggleRequest &) {
+         tray_preferences_mutex, wake_preferences](const JapaneseToggleRequest &request) {
           const auto scheme =
               toggle_japanese_scheme(directory, language_dictionaries);
-          if (!scheme)
+          if (!scheme) {
+            request.completion->set_value(std::nullopt);
             return;
+          }
+          // 再读取得至少刚保存的完整修订；不把保存前的快照交给输入队列。
+          try {
+            request.completion->set_value(PreferenceSnapshot::load(directory.u8string()));
+          } catch (...) {
+            request.completion->set_exception(std::current_exception());
+          }
           {
             std::lock_guard<std::mutex> lock(*tray_preferences_mutex);
             tray_preferences->scheme = *scheme;
@@ -1113,6 +1126,7 @@ int wmain(int argc, wchar_t **argv) {
                       FanyImeProtocol::UiLessCandidates |
                       FanyImeProtocol::HostOnlineCandidates |
                       FanyImeProtocol::GroupedPanelKeys |
+                      FanyImeProtocol::OrderedPreferences |
                       FanyImeProtocol::GameHostCandidate |
                       FanyImeProtocol::FieldTraits |
                       FanyImeProtocol::JapaneseToggleShortcut)
@@ -1121,6 +1135,7 @@ int wmain(int argc, wchar_t **argv) {
                       FanyImeProtocol::UiLessCandidates |
                       FanyImeProtocol::HostOnlineCandidates |
                       FanyImeProtocol::GroupedPanelKeys |
+                      FanyImeProtocol::OrderedPreferences |
                       FanyImeProtocol::GameHostCandidate |
                       FanyImeProtocol::FieldTraits);
     // 管道对端身份对不上时记下 pid 和错误码，用来区分「DLL 加载了但 Server 拒了连接」和「DLL 根本没加载」，比如反作弊剥掉了 Server 打开游戏进程所需的权限。
@@ -1196,6 +1211,7 @@ int wmain(int argc, wchar_t **argv) {
             const bool dedicated_english = tsf_config->dedicated_english;
             *tsf_config = tsf_local_config(preferences, language_dictionaries);
             tsf_config->dedicated_english = dedicated_english;
+            tsf_config->preference_revision = snapshot.revision();
             tsf_config_revision->mark_changed();
           }
           {
@@ -1286,8 +1302,11 @@ int wmain(int argc, wchar_t **argv) {
                     return character_set_clicks.submit(
                         CharacterSetClick{desired});
                   },
-                  [&japanese_toggles] {
-                    return japanese_toggles.submit(JapaneseToggleRequest{});
+                  [&japanese_toggles]() -> PreferenceChange {
+                    auto completion = std::make_shared<std::promise<std::optional<PreferenceSnapshot>>>();
+                    auto result = completion->get_future().share();
+                    if (!japanese_toggles.submit(JapaneseToggleRequest{completion})) return false;
+                    return result;
                   })
             : preview_key_handler(config),
         [](const FocusRoute &, const FanyImeNamedpipeData &) { return true; });

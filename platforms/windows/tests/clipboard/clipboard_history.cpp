@@ -2,10 +2,10 @@
 #include "../core/MaterializedSymlink.h"
 #include <cassert>
 #include <chrono>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,12 +19,16 @@ void require(bool value, int line) {
 }
 #define REQUIRE(value) require((value), __LINE__)
 }
-int main() try {
+int main() {
+  try {
   const auto directory = std::filesystem::temp_directory_path() / "msime-clipboard-history-test";
   const auto path = directory / "history.json";
   std::error_code error; std::filesystem::remove_all(directory, error);
   std::filesystem::create_directory(directory);
   msime::windows::ClipboardHistory history(path);
+  REQUIRE(history.limit() == 50);
+  // 本用例验证最大容量；运行时默认保留 50 条，必须显式选择 1000 条。
+  history.set_limit(msime::windows::ClipboardHistory::max_items);
 
   // Newlines and whitespace are user content and survive the round trip
   // exactly: `normalize_clipboard_text` removes only what CF_UNICODETEXT adds.
@@ -81,19 +85,8 @@ int main() try {
   REQUIRE(capped.find('\0') == std::string::npos && capped.back() == 'x');
   history.clear();
 
-  // 默认只保留 50 条；容量边界用例显式选择最大值，不改产品默认值。
-  REQUIRE(history.limit() == 50);
-  history.set_limit(msime::windows::ClipboardHistory::max_items);
-  for (size_t index = 0; index < msime::windows::ClipboardHistory::max_items + 10; ++index) {
-    const bool added = history.add("item-" + std::to_string(index));
-    if (!added) {
-      std::fprintf(stderr, "Clipboard item %zu failed\n", index);
-#ifdef _WIN32
-      std::fprintf(stderr, "Win32 error %lu\n", GetLastError());
-#endif
-    }
-    REQUIRE(added);
-  }
+  for (size_t index = 0; index < msime::windows::ClipboardHistory::max_items + 10; ++index)
+    REQUIRE(history.add("item-" + std::to_string(index)));
   REQUIRE(history.load().size() == msime::windows::ClipboardHistory::max_items);
 
   {
@@ -152,8 +145,7 @@ int main() try {
     std::filesystem::remove(linked_directory, error);
   }
 
-  // The final store file is untrusted too. A leaf reparse point must not make
-  // history load or mutate a file outside the state directory.
+  // 最终存储文件也不可信：拒绝读写或清除符号链接，不能触及状态目录之外的文件。
   const auto outside_store = outside_directory / "outside-history.json";
   const auto linked_store = directory / "linked-history.json";
   {
@@ -166,7 +158,8 @@ int main() try {
     REQUIRE(linked_history.load().empty());
     REQUIRE(!linked_history.add("synthetic-reparse"));
     REQUIRE(!linked_history.remove("synthetic-outside"));
-    REQUIRE(linked_history.clear());
+    REQUIRE(!linked_history.clear());
+    REQUIRE(std::filesystem::is_symlink(linked_store));
     std::ifstream input(outside_store);
     const std::string outside_payload((std::istreambuf_iterator<char>(input)),
                                       std::istreambuf_iterator<char>());
@@ -223,7 +216,8 @@ int main() try {
 #endif
 
   std::filesystem::remove_all(directory, error);
-} catch (const std::exception &error) {
-  std::fprintf(stderr, "%s\n", error.what());
-  return 1;
+  } catch (const std::exception &failure) {
+    std::cerr << failure.what() << '\n';
+    return 1;
+  }
 }

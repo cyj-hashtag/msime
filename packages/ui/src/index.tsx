@@ -23,6 +23,11 @@ export {
 export { dictionaryErrorMessage } from "./dictionary/dictionary-errors";
 export { PluginNavRow, type PluginNavRowProps } from "./settings/plugin-nav-row";
 export { PluginActionBlock, type PluginActionBlockProps } from "./settings/plugin-action-block";
+export {
+  SettingsSubViewHeader,
+  type SettingsSubViewBackProps,
+  type SettingsSubViewHeaderProps,
+} from "./settings/settings-subview-header";
 
 export {
   type TouchKeyboardScheme,
@@ -429,6 +434,7 @@ export {
   type TypingStatisticsStatus,
   type StatisticsOverviewMetric,
 } from "./settings/typing-statistics";
+export { StatisticsSection, type StatisticsSectionProps } from "./settings/statistics-section";
 export type {
   TypingStatisticsUploadClient,
   TypingStatisticsUploadStatus,
@@ -468,6 +474,16 @@ export {
   type McpServerStatus,
 } from "./settings/mcp-connect";
 export { AccountPage } from "./account/account-page";
+export {
+  AccountMeSection,
+  AccountMeGroup,
+  AccountMeRow,
+  AccountMeSupportGroup,
+  type AccountMeGroupProps,
+  type AccountMeSectionProps,
+  type AccountMeRowProps,
+  type AccountMeSupportGroupProps,
+} from "./account/account-me-components";
 export type {
   AccountChallenge,
   AccountClient,
@@ -1965,9 +1981,9 @@ export type {
 
 /** What a load or save that failed on an unreadable document says; the repair button sits beside exactly this message. */
 /**
- * The 设置 tab draws a gear, not the app.
+ * 「首页」标签画房子，不画应用标志。
  *
- * Its page icon is the app logo, which the design does not put in the bar either — its first tab is the `settings` glyph. Three of the four tabs would otherwise be a subject and the fourth a brand.
+ * 它的页面图标是应用标志，设计稿也没有把标志放进标签栏；否则四格里三格是功能、一格是品牌。
  */
 export {
   customTranslationKeyIssue,

@@ -1763,6 +1763,7 @@ public final class MSIMEInputService extends InputMethodService {
         // 反馈必须在第一下按键前生效，不能被延迟刷新的组字保护跳过。
         loadFeedbackPreferences();
         refreshLocalSettings();
+        imeKeyFeedback.prepare();
         if (info != null) automaticNumberRow.enterEditor(info.inputType, info.packageName);
         if (inlineAutofill != null) inlineAutofill.showInput();
         Telemetry.inputViewShown(this);
@@ -2793,6 +2794,8 @@ public final class MSIMEInputService extends InputMethodService {
     }
 
     String chineseOutput(String text, JSONObject context) {
+        if (context != null && context.has("script_conversion")
+                && !context.optBoolean("script_conversion", true)) return text;
         int scheme = context == null
             ? (view == null ? -1 : InputViewValuePolicy.scheme(view, -1))
             : InputViewValuePolicy.scheme(context, -1);
@@ -2801,6 +2804,16 @@ public final class MSIMEInputService extends InputMethodService {
             : InputViewValuePolicy.textOr(context, "local_mode", "none");
         return AndroidChineseTextConversion.outputString(
             text, traditionalChineseOutput, dedicatedEnglish, scheme, localMode);
+    }
+
+    String chineseCandidateOutput(String text, JSONObject context, int source) {
+        int scheme = context == null ? (view == null ? -1 : InputViewValuePolicy.scheme(view, -1))
+            : InputViewValuePolicy.scheme(context, -1);
+        String localMode = context == null ? (view == null ? "none"
+            : InputViewValuePolicy.textOr(view, "local_mode", "none"))
+            : InputViewValuePolicy.textOr(context, "local_mode", "none");
+        return AndroidChineseTextConversion.candidateOutput(text, traditionalChineseOutput,
+            dedicatedEnglish, scheme, localMode, source);
     }
 
     private String candidateAppearanceKey() {
@@ -3054,7 +3067,8 @@ public final class MSIMEInputService extends InputMethodService {
         liveInputModePreferencesLoaded = true;
         JSONObject nextView = result.getJSONObject("view");
         // 引号与方头括号样式变了也重建键行：符号键、字母提示和 123 层的键面都跟着它画。
-        boolean rebuildLayout = displayedTouchLayout(view) != displayedTouchLayout(nextView)
+        // 会话快照可能已在模式切换中更新，重建依据是屏幕上实际画出的键区。
+        boolean rebuildLayout = imeLetterRows.drawnTouchLayout() != displayedTouchLayout(nextView)
             || japaneseEmojiKeyChanged
             || japaneseToggleInputChanged
             || !InputViewValuePolicy.punctuationMarks(view).equals(
@@ -4068,7 +4082,7 @@ public final class MSIMEInputService extends InputMethodService {
         catch (JSONException | LinkageError error) { fail(error); return true; }
     }
 
-    /** 14 键的一键：送这一组的首字母（{@link FourteenKeyLayout.Key#input}），由引擎按 14 键网格组字。不走 {@link #type}：那里的辅助码、微软双拼 `;` 和英文直出分支都按单个确定的字母处理。引擎不收（26 键正在组字、本地模式等）时什么也不输入，同九键的数字键。 */
+    /** 字母网格的一键：小写送整组首字母，十八键双拼横滑的大写标记限定精确字母，均由引擎在同一网格组字。不走 {@link #type} 的辅助码、分号和英文直出路径；引擎不收时不输入。 */
     boolean gridKey(char letter) {
         clearQuickDeleteUndo();
         if (session == 0) return false;
@@ -7589,17 +7603,51 @@ public final class MSIMEInputService extends InputMethodService {
      * <p>打开之前和「编辑」一样把系统剪贴板当前那一条记为已处理：用户可能在那一页把它删掉或改掉，已处理身份存在本进程（`:ime`）的 SharedPreferences 里，应用进程写不了；不记的话回来一打开面板，补读又把它记了回来。
      */
     void openClipboardSearch() {
-        forgetCurrentClip();
-        android.os.Bundle args = new android.os.Bundle();
-        putReturnToCaller(args);
-        closeClipboardHistory();
-        openHostPage(ClipboardSearchPolicy.SEARCH_PAGE, args);
+        authenticateClipboard("搜索", () -> {
+            forgetCurrentClip();
+            android.os.Bundle args = new android.os.Bundle();
+            putReturnToCaller(args);
+            closeClipboardHistory();
+            openHostPage(ClipboardSearchPolicy.SEARCH_PAGE, args);
+        });
     }
 
     private boolean clipboardExportBusy;
+    private long clipboardAuthenticationGeneration;
+    private boolean clipboardAuthenticationBusy;
+
+    private void authenticateClipboard(String operation, Runnable after) {
+        if (clipboardAuthenticationBusy) return;
+        clipboardAuthenticationBusy = true;
+        long generation = ++clipboardAuthenticationGeneration;
+        android.os.ResultReceiver receiver = new android.os.ResultReceiver(main) {
+            @Override protected void onReceiveResult(int code, android.os.Bundle payload) {
+                if (generation != clipboardAuthenticationGeneration) return;
+                clipboardAuthenticationBusy = false;
+                if (code == 2001)
+                    after.run();
+                else notice("未通过系统认证，剪贴板操作已取消");
+            }
+        };
+        try {
+            Intent intent = new Intent().setClassName(getPackageName(),
+                "app.msime.android.ClipboardAuthenticationActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                .putExtra("app.msime.android.clipboard.AUTH_RESULT", receiver)
+                .putExtra("app.msime.android.clipboard.AUTH_SUBTITLE", operation + "剪贴板历史");
+            startActivity(intent);
+        } catch (RuntimeException unavailable) {
+            clipboardAuthenticationBusy = false;
+            notice("这台设备没有可用的系统认证");
+        }
+    }
 
     /** 键盘右上方显式导出；旧系统首次授权交给原生历史页承接。 */
     void exportClipboardHistory() {
+        authenticateClipboard("导出", this::exportClipboardHistoryAfterAuthentication);
+    }
+
+    private void exportClipboardHistoryAfterAuthentication() {
         if (clipboardExportBusy) return;
         clipboardExportBusy = true;
         Context application = getApplicationContext();
@@ -7669,6 +7717,10 @@ public final class MSIMEInputService extends InputMethodService {
      * 面板里「清空」确认之后执行。确认就画在面板里（{@link ImePanels#renderClipboardHistory}），不弹 `AlertDialog`：输入法服务没有 Activity 的窗口令牌，对话框要么加不上窗口、让输入法进程崩掉，要么抢走编辑器的窗口焦点，两种情况键盘都会被收起（#5605）。
      */
     void clearClipboardHistory() {
+        authenticateClipboard("清空", this::clearClipboardHistoryAfterAuthentication);
+    }
+
+    private void clearClipboardHistoryAfterAuthentication() {
         // 这是用户自己要求的清空，失败要说出来，不能吞掉。
         try {
             if (clipboardHistory != null) clipboardHistory.clear();
@@ -7833,7 +7885,8 @@ public final class MSIMEInputService extends InputMethodService {
         JSONObject currentId = current == null ? null : current.optJSONObject("id");
         return current != null && currentId != null && id != null
             && sameCandidateIdentity(currentId, id)
-            && text.equals(chineseOutput(InputViewValuePolicy.textOr(current, "text", ""), view));
+            && text.equals(chineseCandidateOutput(InputViewValuePolicy.textOr(current, "text", ""), view,
+                InputViewValuePolicy.integer(current, "source", -1)));
     }
 
     boolean candidateGlossInsertionEnabled() {
@@ -7861,7 +7914,8 @@ public final class MSIMEInputService extends InputMethodService {
                                   String text, String gloss) {
         if (!sameCandidateVersion(snapshot, view) || !candidateVersionIsCurrent(id)
                 || candidate == null || !sameCandidateIdentity(candidate.optJSONObject("id"), id)
-                || !text.equals(chineseOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view))
+                || !text.equals(chineseCandidateOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view,
+                    InputViewValuePolicy.integer(candidate, "source", -1)))
                 || connection == null) return;
         if (!commitText(gloss, TypingSource.LOCAL)) return;
         if (session != 0) command(3);
@@ -7893,7 +7947,8 @@ public final class MSIMEInputService extends InputMethodService {
     private void performTranslationCommit(int action, TranslationTarget target) {
         if (action == HardwareTranslationCommitPolicy.COMMIT) {
             JSONObject id = target.candidate().optJSONObject("id");
-            String text = chineseOutput(InputViewValuePolicy.textOr(target.candidate(), "text", ""), view);
+            String text = chineseCandidateOutput(InputViewValuePolicy.textOr(target.candidate(), "text", ""), view,
+                InputViewValuePolicy.integer(target.candidate(), "source", -1));
             closeCandidatePanel();
             insertCandidateGloss(target.slot(), id, text, target.senses().get(0));
         } else if (action == HardwareTranslationCommitPolicy.OPEN_PAGE) {
@@ -7970,7 +8025,8 @@ public final class MSIMEInputService extends InputMethodService {
         JSONObject candidateId = candidate.optJSONObject("id");
         return candidateId != null
             && sameCandidateIdentity(candidateId, id)
-            && text.equals(chineseOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view));
+            && text.equals(chineseCandidateOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view,
+                InputViewValuePolicy.integer(candidate, "source", -1)));
     }
 
     /** 释义（以及韩语汉字的 훈음）总是从候选下面另起一行，和 iOS 候选条一致；放在同一行会把候选撑宽，一屏只剩一两个候选。 */
@@ -8124,7 +8180,8 @@ public final class MSIMEInputService extends InputMethodService {
         if (id == null || session == 0
                 || CandidateGlossPolicy.strictOr(id.opt("session"), Long.MIN_VALUE) != session)
             return false;
-        String displayed = chineseOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view);
+        String displayed = chineseCandidateOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view,
+            InputViewValuePolicy.integer(candidate, "source", -1));
         try {
             candidatePanelOpen = false;
             if (apply(NativeClient.selectEdge(session, strictCandidateLong(id, "generation"),
@@ -8217,7 +8274,8 @@ public final class MSIMEInputService extends InputMethodService {
 
     void updateCandidateButton(Button button, JSONObject candidate, int slot, int visibleSlot) {
         int source = InputViewValuePolicy.integer(candidate, "source", -1);
-        String text = chineseOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view);
+        String text = chineseCandidateOutput(InputViewValuePolicy.textOr(candidate, "text", ""), view,
+            InputViewValuePolicy.integer(candidate, "source", -1));
         ((ContactCandidateButton) button).setContactSource(source);
         boolean highlighted = InputViewValuePolicy.booleanValue(candidate, "highlighted", false);
         CandidateCanvasAssets canvas = candidateAppearance.canvas();

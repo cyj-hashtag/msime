@@ -136,6 +136,7 @@ static void CheckMenu(NSMenu *menu, id controller) {
 @property(nonatomic, copy) NSDictionary *cancelTransition;
 @property(nonatomic) NSUInteger snapshotCalls;
 @property(nonatomic, copy) NSDictionary *lastSnapshot;
+@property(nonatomic, copy) NSDictionary *fixtureView;
 @property(nonatomic) NSUInteger settledRerankCalls;
 @property(nonatomic) NSUInteger rawCommitCalls;
 @property(nonatomic) NSUInteger commandCalls;
@@ -215,11 +216,16 @@ static void CheckMenu(NSMenu *menu, id controller) {
 - (NSDictionary *)setCharacterWidthFull:(BOOL)fullwidth error:(NSError **)error {
     (void)error; self.fullwidth = fullwidth; ++self.widthCalls; return nil;
 }
+- (NSDictionary *)setMultilingualOutput:(BOOL)traditional error:(NSError **)error {
+    (void)traditional;
+    return [self viewWithError:error];
+}
 - (BOOL)setCapsLockEnabled:(BOOL)enabled error:(NSError **)error {
     (void)error; self.capsLock = enabled; ++self.capsLockCalls; return YES;
 }
 - (NSDictionary *)viewWithError:(NSError **)error {
     (void)error;
+    if (self.fixtureView) return self.fixtureView;
     return @{@"focused":@NO, @"editing_text":@"", @"candidates":@[], @"dedicated_english":@(self.dedicatedEnglish)};
 }
 - (NSDictionary *)setDedicatedEnglishEnabled:(BOOL)enabled error:(NSError **)error {
@@ -3473,6 +3479,10 @@ static void TestGlossSenseTraditionalOutput(MSIMEAppearancePreferences *appearan
              @"preedit": self.editing, @"caret_position": @(self.editing.length), @"page": @(start / self.pageSize),
              @"page_count": @((self.total + self.pageSize - 1) / self.pageSize), @"candidates": page};
 }
+- (NSDictionary *)viewWithError:(NSError **)error {
+    (void)error;
+    return [self gridView];
+}
 - (NSDictionary *)command:(uint32_t)command error:(NSError **)error {
     switch (command) {
         case MSIME_NEXT_CANDIDATE: self.highlighted = MIN(self.highlighted + 1, self.total - 1); break;
@@ -3507,6 +3517,31 @@ static void TestGlossSenseTraditionalOutput(MSIMEAppearancePreferences *appearan
     return @{@"handled": @YES, @"commit": [NSString stringWithFormat:@"%@%lu", self.prefix, (unsigned long)index],
              @"view": @{@"focused": @YES, @"session": @1, @"generation": @(self.generation + 1), @"editing_text": @"",
                         @"caret_position": @0, @"candidates": @[]}};
+}
+@end
+
+// 部分选词会推进组字前缀并更换候选代次，直至最后一次才整句上屏。
+@interface PartialExpandedGridSession : ExpandedGridSession
+@property(nonatomic, copy) NSArray<NSNumber *> *remainingTotals;
+@property(nonatomic, copy) NSString *selectedPrefix;
+@end
+@implementation PartialExpandedGridSession
+- (NSDictionary *)gridView {
+    NSMutableDictionary *view = [[super gridView] mutableCopy];
+    view[@"scheme"] = @1;
+    view[@"phrase_prefix"] = self.selectedPrefix ?: @"";
+    return view;
+}
+- (NSDictionary *)selectAnyCandidateGeneration:(uint64_t)generation index:(NSUInteger)index error:(NSError **)error {
+    NSDictionary *selected = [super selectAnyCandidateGeneration:generation index:index error:error];
+    if (!selected || !self.remainingTotals.count) return selected;
+    self.total = self.remainingTotals.firstObject.unsignedIntegerValue;
+    self.remainingTotals = [self.remainingTotals subarrayWithRange:NSMakeRange(1, self.remainingTotals.count - 1)];
+    self.selectedPrefix = [(self.selectedPrefix ?: @"") stringByAppendingString:@"合成前缀"];
+    self.editing = [self.editing substringFromIndex:1];
+    self.highlighted = 0;
+    ++self.generation;
+    return @{@"handled": @YES, @"view": [self gridView]};
 }
 @end
 
@@ -4274,6 +4309,78 @@ static void TestExpandedCandidateGridGeneration() {
     other.caret = NSMakeRect(300, 400, 1, 18);
     [controller handleEvent:ModeKey(0, 0, NO) client:other];
     assert(!expanded());
+    MSIMERemoveTestPreferenceSuite(defaults, suite);
+}
+
+static void TestExpandedCandidatePartialSelection() {
+    NSString *suite = [@"msime.expanded-partial." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    MSIMEAppearancePreferences *prefs = [[MSIMEAppearancePreferences alloc] initWithDefaults:defaults];
+    prefs.vertical = NO;
+    prefs.pageSize = 5;
+    prefs.englishMode = NO;
+    prefs.expandCandidates = YES;
+    // 数字、空格、回车和鼠标都通过相同的带代次选词接口。
+    for (NSNumber *input in @[@18, @49, @36, @(-1)]) {
+        ModeController *controller = [ModeController alloc];
+        PartialExpandedGridSession *session = [PartialExpandedGridSession new];
+        session.generation = 10;
+        session.total = 23;
+        session.pageSize = 5;
+        session.prefix = @"合成词";
+        session.editing = @"yigelaji";
+        session.remainingTotals = @[@9, @4];
+        NestingClient *client = [NestingClient new];
+        client.caret = NSMakeRect(200, 400, 1, 18);
+        HiddenCandidatePanel *panel = [[HiddenCandidatePanel alloc] init];
+        [controller setValue:prefs forKey:@"appearance"];
+        [controller setValue:session forKey:@"session"];
+        [controller setValue:client forKey:@"activeClient"];
+        [controller setValue:panel forKey:@"panel"];
+        [controller setValue:[session gridView] forKey:@"view"];
+        [controller renderCandidates];
+        assert([controller openExpandedCandidates]);
+        auto select = [&] {
+            if (input.intValue < 0) [controller selectExpandedCandidate:ExpandedGridSubview(panel, 0)];
+            else assert([controller handleEvent:ModeKey(input.unsignedShortValue, 0, NO) client:client]);
+        };
+        for (NSNumber *remaining in @[@9, @4]) {
+            const uint64_t generation = session.generation;
+            MSIMECandidateButton *oldButton = ExpandedGridSubview(panel, 0);
+            select();
+            assert(session.selectAnyGeneration == generation && session.total == remaining.unsignedIntegerValue);
+            assert([controller valueForKey:@"expandedCandidates"] && !client.committed);
+            assert([[controller valueForKey:@"expandedGeneration"] isEqual:@(generation + 1)]);
+            assert([[controller valueForKey:@"expandedCursor"] unsignedIntegerValue] == 0);
+            assert(ExpandedGridHighlightedTag(panel) == 0);
+            const NSUInteger selections = session.selectAnyCalls;
+            [controller selectExpandedCandidate:oldButton];
+            assert(session.selectAnyCalls == selections && [controller valueForKey:@"expandedCandidates"]);
+        }
+        select();
+        assert(![controller valueForKey:@"expandedCandidates"] && client.committed.length);
+
+        // 普通候选剩一页时没有新入口；显式收起后的下一次输入也不自动展开。
+        [controller setValue:[session gridView] forKey:@"view"];
+        [controller renderCandidates];
+        assert(![controller openExpandedCandidates]);
+
+        // 部分选词写入 marked text 时若有更新回复重入，旧选择不重新打开网格。
+        session.total = 12;
+        session.remainingTotals = @[@4];
+        [controller setValue:[session gridView] forKey:@"view"];
+        [controller renderCandidates];
+        assert([controller openExpandedCandidates]);
+        __weak ModeController *weakController = controller;
+        client.onMarkedText = ^{
+            ++session.generation;
+            session.editing = @"syntheticnew";
+            [weakController apply:@{@"view": [session gridView]}];
+        };
+        select();
+        assert(![controller valueForKey:@"expandedCandidates"]);
+        assert([[controller valueForKey:@"view"][@"editing_text"] isEqual:@"syntheticnew"]);
+    }
     MSIMERemoveTestPreferenceSuite(defaults, suite);
 }
 
@@ -6577,12 +6684,17 @@ static CGEventFlags SyntheticCapsFlags(CGEventSourceStateID state) {
     return NX_ALPHASHIFTMASK | (gCapsHeld ? NX_ALPHASHIFT_STATELESS_MASK : 0);
 }
 static bool SyntheticCapsRelease() { ++gCapsReleases; return gCapsReleaseWorks; }
+static NSUInteger gCapsHIDStarts = 0;
+static void SyntheticCapsHIDStart() { ++gCapsHIDStarts; }
 
 static void TestCapsLockTap() {
     const auto realRelease = MSIMECapsLockRelease;
     const auto realHID = MSIMECapsLockHIDState;
     const auto realFlags = MSIMEPhysicalModifierFlagsState;
     const auto realNow = MSIMECapsLockNow;
+    const auto realHIDStart = MSIMECapsLockHIDStart;
+    MSIMECapsLockHIDStart = &SyntheticCapsHIDStart;
+    gCapsHIDStarts = 0;
     MSIMECapsLockRelease = &SyntheticCapsRelease;
     MSIMECapsLockHIDState = &SyntheticCapsHID;
     MSIMEPhysicalModifierFlagsState = &SyntheticCapsFlags;
@@ -6782,7 +6894,19 @@ static void TestCapsLockTap() {
     gCapsNow = 13050;
     [controller pollCapsLockTap];
     assert(session.capsLock && !prefs.englishMode && gCapsReleases == releasesBefore);
+    // 报实体按住位的设备从不启动 HID 监听，不会被要求「输入监控」授权；只有这台不报的设备才启动一次。
+    assert(gCapsHIDStarts == 1);
+    // HID 有了结果之后，同一台设备的轻点按实体按下和松开判定，照常切换。
+    assert(![controller handleEvent:capsOff(13.5) client:client]);
+    gCapsHIDKnown = true; gCapsHIDHeld = true;
+    gCapsNow = 14000;
+    assert(![controller handleEvent:capsOn(14.0) client:client]);
+    gCapsNow = 14050; gCapsHIDHeld = false;
+    [controller pollCapsLockTap];
+    assert(prefs.englishMode && gCapsReleases == releasesBefore + 1 && gCapsHIDStarts == 1);
+    gCapsHIDKnown = false;
 
+    MSIMECapsLockHIDStart = realHIDStart;
     MSIMECapsLockRelease = realRelease;
     MSIMECapsLockHIDState = realHID;
     MSIMEPhysicalModifierFlagsState = realFlags;
@@ -12590,6 +12714,7 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string(argv[1]) == "--expanded-scroll") {
             TestExpandedCandidateGrid();
             TestExpandedCandidateGridGeneration();
+            TestExpandedCandidatePartialSelection();
             return 0;
         }
         if (argc == 2 && std::string(argv[1]) == "--session-recovery") {
@@ -13710,6 +13835,8 @@ int main(int argc, char **argv) {
         }
         appearance.vertical = NO;
         session.lastCommand = UINT32_MAX;
+        // 外观通知会重新读取会话；夹具与控制器必须持有同一代候选。
+        session.fixtureView = pageView;
         [controller appearanceChanged:nil];
         assert(session.lastCommand == UINT32_MAX);
         assert(layoutPanel.frame.size.height < verticalHeight);
@@ -14238,6 +14365,8 @@ int main(int argc, char **argv) {
         // Japanese and Unicode commits keep the Engine's text untouched, the same rule apply: uses for every commit.
         assert([pressEdge(@"头发", YES, @"发", @{@"scheme": @0, @"local_mode": @"temporary_japanese", @"script_conversion": @NO}) isEqual:@"发"]);
         assert([pressEdge(@"头发", YES, @"发", @{@"scheme": @0, @"local_mode": @"unicode", @"script_conversion": @NO}) isEqual:@"发"]);
+        // 混合候选中文段已转换，日文汉字和共享运行时给出的边缘文字必须原样上屏。
+        assert([pressEdge(@"hello網絡学校", NO, @"学", @{@"scheme": @0, @"local_mode": @"none", @"script_conversion": @NO}) isEqual:@"学"]);
         [controller selectSimplifiedOutput:nil];
         assert([pressEdge(@"头发", YES, @"发", chineseContext) isEqual:@"发"]);
         assert([pressHeldEdge(@"你好", @"头发", YES, @"你好发", chineseContext) isEqual:@"你好发"]);
@@ -14380,6 +14509,9 @@ int main(int argc, char **argv) {
         assert([CandidateDisplay(@{@"text": @"你好", @"annotation": @" wqvb wqv "}, NO) isEqual:@"你好(wqvb wqv)"]);
         assert([CandidateDisplay(@{@"text": @"深圳市", @"annotation": @"（广东省）"}, NO) isEqual:@"深圳市（广东省）"]);
         assert([CandidateDisplay(@{@"text": @"你好", @"annotation": @"  "}, NO) isEqual:@"你好"]);
+        assert(([CandidateDisplay(@{@"text": @"hello網絡学校", @"source": @18}, NO) isEqual:@"hello網絡学校"]));
+        assert(([CandidateDisplay(@{@"text": @"hello網絡学校", @"source": @18}, YES) isEqual:@"hello網絡学校"]));
+        assert(([CandidateDisplay(@{@"text": @"学校", @"source": @0}, YES) isEqual:@"學校"]));
         assert(([CandidateDisplay(@{@"text":@"汉语", @"corrected":@YES, @"annotation":@"(aB)", @"source":@2}, YES) isEqual:@"漢語*(aB) ☁️"]));
         for (id corrected in @[@NO, @1, @"true", NSNull.null])
             assert(([CandidateDisplay(@{@"text":@"汉语", @"corrected":corrected}, NO) isEqual:@"汉语"]));
@@ -14394,6 +14526,7 @@ int main(int argc, char **argv) {
         assert([CandidateDisplayWithBadges(@{@"source": @3}, NO, nil, @"") isEqual:@" 🤖"]);
         NSMutableDictionary *scriptView = [@{@"scheme": @0, @"local_mode": @"none", @"script_conversion": @YES, @"session": @1, @"generation": @20, @"editing_text": @"hanyu", @"caret_position": @5, @"candidates": @[@{@"text": @"汉语", @"highlighted": @YES, @"id": @{@"session": @1, @"generation": @20, @"index": @0}}]} mutableCopy];
         [controller setValue:[scriptView copy] forKey:@"view"];
+        session.fixtureView = scriptView;
         NSDictionary *preserved = [[controller valueForKey:@"view"] copy];
         [controller selectTraditionalOutput:nil];
         [controller appearanceChanged:nil];
@@ -14613,6 +14746,7 @@ int main(int argc, char **argv) {
         @autoreleasepool { TestPinyinArrowCandidateNavigation(); }
         @autoreleasepool { TestExpandedCandidateGrid(); }
         @autoreleasepool { TestExpandedCandidateGridGeneration(); }
+        @autoreleasepool { TestExpandedCandidatePartialSelection(); }
         @autoreleasepool { TestSegmentEditingChords(appearance); }
         @autoreleasepool { TestSchemeTraitsFromView(appearance); }
         @autoreleasepool { TestSchemeKeyRouting(); }

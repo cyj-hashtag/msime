@@ -1809,11 +1809,22 @@ fn japanese_mixing_fixture() -> Fixture {
     fixture
 }
 
-fn japanese_session(fixture: &Fixture, configure: impl FnOnce(&mut SessionOptions)) -> Session {
-    fixture.session_with(|options| {
+fn japanese_session(
+    fixture: &Fixture,
+    configure: impl FnOnce(&mut SessionOptions),
+) -> (
+    Session,
+    Option<std::sync::Arc<crate::japanese::decoder::JapaneseDictionary>>,
+) {
+    // 行为断言持有已就绪的模型，避免并行用例的全局清缓存把它在首个查询前释放。
+    let model = crate::japanese::decoder::JapaneseDictionary::shared(
+        &fixture.path().join(assets::JAPANESE_MODEL),
+    );
+    let session = fixture.session_with(|options| {
         options.japanese_mixing = true;
         configure(options);
-    })
+    });
+    (session, model)
 }
 
 /// 列表里日文混输行的下标；没有时为 `None`，有两行就失败。
@@ -1833,7 +1844,7 @@ fn japanese_index(session: &Session) -> Option<usize> {
 #[test]
 fn a_japanese_conversion_leads_or_follows_the_whole_chinese_word() {
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
 
     type_text(&mut session, "ohayou");
     assert_eq!(japanese_index(&session), Some(0), "{:?}", words(&session));
@@ -1882,7 +1893,7 @@ fn a_japanese_conversion_leads_or_follows_the_whole_chinese_word() {
 #[test]
 fn short_exact_readings_stay_out_and_unknown_readings_do_not_lead() {
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
     for raw in ["kai", "shou"] {
         type_text(&mut session, raw);
         assert_eq!(
@@ -1907,18 +1918,18 @@ fn japanese_mixing_stays_out_unless_every_gate_passes() {
     type_text(&mut off, "ohayou");
     assert_eq!(japanese_index(&off), None);
 
-    let mut quanpin_only = japanese_session(&fixture, |options| {
+    let (mut quanpin_only, _japanese_model) = japanese_session(&fixture, |options| {
         options.enabled_schemes = SchemeSet::of(&[SchemeType::Quanpin]);
     });
     type_text(&mut quanpin_only, "ohayou");
     assert_eq!(japanese_index(&quanpin_only), None);
 
     let missing = Fixture::new(JAPANESE_MIXING_FIXTURE);
-    let mut missing = japanese_session(&missing, |_| {});
+    let (mut missing, _japanese_model) = japanese_session(&missing, |_| {});
     type_text(&mut missing, "ohayou");
     assert_eq!(japanese_index(&missing), None);
 
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
     for raw in ["kai'shi", "su", "kaish"] {
         type_text(&mut session, raw);
         assert_eq!(
@@ -1952,13 +1963,14 @@ fn japanese_mixing_stays_out_unless_every_gate_passes() {
 #[test]
 fn shuangpin_mixes_a_japanese_conversion_too() {
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |options| options.scheme = SchemeType::Shuangpin);
+    let (mut session, _japanese_model) =
+        japanese_session(&fixture, |options| options.scheme = SchemeType::Shuangpin);
     type_text(&mut session, "sugoi");
     // 双拼辅助码开着时奇数长度的第五键算辅助码，不混日文。
     assert!(session.input.has_active_helpcode());
     assert_eq!(japanese_index(&session), None, "{:?}", words(&session));
 
-    let mut session = japanese_session(&fixture, |options| {
+    let (mut session, _japanese_model) = japanese_session(&fixture, |options| {
         options.scheme = SchemeType::Shuangpin;
         options.helpcode = false;
     });
@@ -1972,7 +1984,7 @@ fn shuangpin_mixes_a_japanese_conversion_too() {
 fn a_leading_japanese_conversion_follows_a_leading_english_word() {
     let fixture = japanese_mixing_fixture()
         .with_english("INSERT INTO english_words VALUES('tabemasu','tabemasu',100);");
-    let mut session = japanese_session(&fixture, |options| {
+    let (mut session, _japanese_model) = japanese_session(&fixture, |options| {
         options.english.mixed_candidates = true;
         options.personal_context = false;
         options.frequency.mode = FrequencyAdjustmentMode::Promote;
@@ -2006,7 +2018,7 @@ fn japanese_rows_skip_duplicates_and_respect_the_online_seats() {
             connection.execute_batch("INSERT INTO tbl_2_k VALUES('kai''shi','ks','開始',50);")
         })
         .unwrap();
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
     type_text(&mut session, "kaishi");
     assert_eq!(japanese_index(&session), None, "{:?}", words(&session));
     assert_eq!(
@@ -2019,7 +2031,7 @@ fn japanese_rows_skip_duplicates_and_respect_the_online_seats() {
     session.command(Command::Cancel);
 
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
     type_text(&mut session, "kaishi");
     let query = session.online_query().expect("全拼查询");
     assert!(session.apply_online_candidates(
@@ -2049,7 +2061,7 @@ fn japanese_rows_skip_duplicates_and_respect_the_online_seats() {
 #[test]
 fn committing_a_japanese_row_ends_the_composition_and_learns_nothing() {
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |options| {
+    let (mut session, _japanese_model) = japanese_session(&fixture, |options| {
         options.frequency.mode = FrequencyAdjustmentMode::Promote;
         options.frequency.trigger_count = 1;
     });
@@ -2100,7 +2112,7 @@ fn committing_a_japanese_row_ends_the_composition_and_learns_nothing() {
 #[test]
 fn picking_the_chinese_row_behind_a_leading_japanese_row_is_the_default_pick() {
     let fixture = japanese_mixing_fixture();
-    let mut session = japanese_session(&fixture, |options| {
+    let (mut session, _japanese_model) = japanese_session(&fixture, |options| {
         options.personal_context = false;
         options.frequency.mode = FrequencyAdjustmentMode::Promote;
     });
@@ -2121,7 +2133,7 @@ fn japanese_rows_carry_no_helpcode() {
         crate::japanese::decoder::test_model::bytes(&[("すごい", "好", 0, 0, 600)], 1, &[0]),
     )
     .unwrap();
-    let mut session = japanese_session(&fixture, |_| {});
+    let (mut session, _japanese_model) = japanese_session(&fixture, |_| {});
     type_text(&mut session, "sugoi");
     let index = japanese_index(&session).unwrap();
     assert_eq!(words(&session)[index], "好");
@@ -2140,7 +2152,8 @@ fn japanese_mixing_warms_the_model_when_the_session_is_built() {
     let _off = fixture.session();
     JapaneseDictionary::wait_until_warmed(&model);
     assert!(!JapaneseDictionary::is_shared(&model));
-    let _on = japanese_session(&fixture, |_| {});
+    // 预热专项直接建会话，不经行为夹具预先读取模型。
+    let _on = fixture.session_with(|options| options.japanese_mixing = true);
     JapaneseDictionary::wait_until_warmed(&model);
     assert!(JapaneseDictionary::is_shared(&model));
 }
@@ -5224,6 +5237,152 @@ fn fourteen_key_shuangpin_separates_touch_groups_from_hardware_letters() {
     let mut quanpin = fixture.session();
     quanpin.set_key_grid(Some(KeyGrid::FourteenKeyShuangpin(table)));
     assert!(!quanpin.grid_key(b'n').handled);
+}
+
+/// 无候选时仍上屏小写字母，不能泄漏内部精确标记。
+#[test]
+fn eighteen_key_shuangpin_exact_markers_do_not_escape_raw_fallback() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    for finish in [false, true] {
+        let mut session = fixture.session_with(|options| {
+            options.scheme = SchemeType::Shuangpin;
+            options.shuangpin_profile = ShuangpinProfileKind::Xiaohe;
+            options.english.mixed_candidates = false;
+        });
+        let table = crate::nine_key_shuangpin::resolve_eighteen_key_shuangpin(
+            ShuangpinProfileKind::Xiaohe,
+            None,
+        )
+        .unwrap();
+        session.set_key_grid(Some(KeyGrid::EighteenKeyShuangpin(table)));
+        assert!(session.grid_key(b'I').handled);
+        assert!(session.snapshot().candidates.is_empty());
+        let result = if finish {
+            session.finish(0)
+        } else {
+            session.command(Command::CommitRaw)
+        };
+        assert_eq!(result.commit.as_deref(), Some("i"));
+        assert!(session.snapshot().editing_text.is_empty());
+    }
+}
+
+/// 逐段结束中文后，无候选的余码也不能泄漏内部精确标记。
+#[test]
+fn eighteen_key_shuangpin_exact_markers_do_not_escape_finish_tail() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.scheme = SchemeType::Shuangpin;
+        options.shuangpin_profile = ShuangpinProfileKind::Xiaohe;
+        options.english.mixed_candidates = false;
+    });
+    let table = crate::nine_key_shuangpin::resolve_eighteen_key_shuangpin(
+        ShuangpinProfileKind::Xiaohe,
+        None,
+    )
+    .unwrap();
+    session.set_key_grid(Some(KeyGrid::EighteenKeyShuangpin(table)));
+    for key in b"NiI" {
+        assert!(session.grid_key(*key).handled);
+    }
+    assert_eq!(session.snapshot().candidates[0].word, "你");
+    assert_eq!(session.finish(0).commit.as_deref(), Some("你i"));
+    assert!(session.snapshot().editing_text.is_empty());
+}
+
+/// 横滑的确定字母保留在同一组码串；点按仍可与它交替。
+#[test]
+fn eighteen_key_shuangpin_exact_letters_constrain_the_current_grid() {
+    let fixture = Fixture::new(QUANPIN_FIXTURE);
+    let mut session = fixture.session_with(|options| {
+        options.scheme = SchemeType::Shuangpin;
+        options.shuangpin_profile = ShuangpinProfileKind::Xiaohe;
+    });
+    let table = crate::nine_key_shuangpin::resolve_eighteen_key_shuangpin(
+        ShuangpinProfileKind::Xiaohe,
+        None,
+    )
+    .unwrap();
+    session.set_key_grid(Some(KeyGrid::EighteenKeyShuangpin(table)));
+    for key in b"bi" {
+        assert!(session.grid_key(*key).handled);
+    }
+    let ambiguous = session.snapshot().nine_key_spellings;
+    assert!(ambiguous.iter().any(|s| s == "bi") && ambiguous.iter().any(|s| s == "ni"));
+    session.command(Command::Cancel);
+
+    assert!(session.grid_key(b'N').handled, "十八键双拼应接收精确字母");
+    assert!(session.grid_key(b'i').handled);
+    let exact = session.snapshot();
+    assert_eq!(exact.editing_text, "Ni");
+    assert!(exact.nine_key_spellings.iter().any(|s| s == "ni"));
+    assert!(!exact.nine_key_spellings.iter().any(|s| s == "bi"));
+    assert_eq!(
+        exact
+            .nine_key_spellings
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        exact.nine_key_spellings.len()
+    );
+    for key in b"hC" {
+        assert!(session.grid_key(*key).handled);
+    }
+    assert_eq!(
+        select_word(&mut session, "你好").commit.as_deref(),
+        Some("你好")
+    );
+
+    // 中间编辑仍在精确网格中；退格只删除当前位置之前的一位。
+    for key in b"Ni" {
+        assert!(session.grid_key(*key).handled);
+    }
+    session.command(Command::MoveLeft);
+    assert!(session.grid_key(b'H').handled);
+    assert_eq!(session.snapshot().editing_text, "NHi");
+    session.command(Command::Backspace);
+    assert_eq!(session.snapshot().editing_text, "Ni");
+    session.command(Command::DeleteForward);
+    assert_eq!(session.snapshot().editing_text, "N");
+    assert!(session.grid_key(b'I').handled);
+    assert_eq!(session.snapshot().editing_text, "NI");
+    let ni = session
+        .snapshot()
+        .nine_key_spellings
+        .iter()
+        .position(|s| s == "ni")
+        .unwrap();
+    assert!(session.choose_nine_key_spelling(ni).handled);
+    assert_eq!(session.snapshot().nine_key_reading, "ni");
+    session.command(Command::Backspace);
+    assert_eq!(session.snapshot().editing_text, "NI");
+    assert!(!session
+        .snapshot()
+        .nine_key_spellings
+        .iter()
+        .any(|s| s == "bi"));
+    session.command(Command::Cancel);
+    assert!(session.character(b'n', false).handled);
+    assert!(!session.grid_composing());
+    assert!(!session.grid_key(b'I').handled);
+    assert_eq!(session.snapshot().editing_text, "n");
+    session.command(Command::Cancel);
+    session.set_dedicated_english(true);
+    assert!(!session.grid_key(b'N').handled);
+
+    let mut quanpin = fixture.session();
+    quanpin.set_key_grid(Some(KeyGrid::EighteenKey));
+    assert!(!quanpin.grid_key(b'N').handled);
+    assert!(quanpin.grid_key(b'n').handled);
+    let fourteen = crate::nine_key_shuangpin::resolve_fourteen_key_shuangpin(
+        ShuangpinProfileKind::Xiaohe,
+        None,
+    )
+    .unwrap();
+    session.set_dedicated_english(false);
+    session.set_key_grid(Some(KeyGrid::FourteenKeyShuangpin(fourteen)));
+    assert!(!session.grid_key(b'N').handled);
+    assert!(session.grid_key(b'n').handled);
 }
 
 /// 14 键：组码只从 `grid_key` 进九宫格，组里任一字母都归成首字母；硬件键盘的字母照常走全拼，九宫格组字中不处理。

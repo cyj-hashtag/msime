@@ -1078,6 +1078,10 @@ struct SettingsWindow::State {
     TreeView_SetItemHeight(navigation_tree, dip(32));
     TreeView_SetIndent(navigation_tree, dip(14));
     const auto group = [&](const wchar_t* title, std::initializer_list<int> children, bool expanded) {
+      const auto available = std::count_if(children.begin(), children.end(), [](const int page) {
+        return chrome::page_available(static_cast<size_t>(page));
+      });
+      if (!available) return;
       TVINSERTSTRUCTW entry{};
       entry.hParent = TVI_ROOT; entry.hInsertAfter = TVI_LAST;
       entry.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
@@ -1085,6 +1089,7 @@ struct SettingsWindow::State {
       entry.item.stateMask = TVIS_BOLD; entry.item.state = TVIS_BOLD;
       const auto parent = TreeView_InsertItem(navigation_tree, &entry);
       for (const auto page : children) {
+        if (!chrome::page_available(static_cast<size_t>(page))) continue;
         entry.hParent = parent; entry.item.state = 0;
         entry.item.pszText = const_cast<wchar_t*>(chrome::pages[static_cast<size_t>(page)].title);
         if (page == 20 && !MSIME_EDITION_HANDWRITING) entry.item.pszText = const_cast<wchar_t*>(L"屏幕键盘");
@@ -1098,7 +1103,7 @@ struct SettingsWindow::State {
     group(L"词库与数据", {13, 14, 11, 12, 15}, false);
     group(L"个性外观", {8, 22}, true);
     group(L"社区", {9, 17, 18}, false);
-    group(L"账号与应用", {7, 10, 2, 16}, false);
+    group(L"统计与支持", {7, 10, 2, 16}, false);
     syncing_navigation = true;
     TreeView_SelectItem(navigation_tree, navigation_pages[0]);
     syncing_navigation = false;
@@ -1178,10 +1183,9 @@ struct SettingsWindow::State {
                                       int id, int top, int height) {
       return surface_row(Surface::ai, type, text, style, id, top, height);
     });
-    surface_row(Surface::account, L"BUTTON", L"打开社区词库、回复模板与我的作品", WS_TABSTOP | BS_PUSHBUTTON, CommunityResourceForm::open, 0, 32);
-    account_height = 48 + account_form.create([this](const wchar_t* type, const wchar_t* text, DWORD style,
+    account_height = account_form.create([this](const wchar_t* type, const wchar_t* text, DWORD style,
                                                 int id, int top, int height) {
-      return surface_row(Surface::account, type, text, style, id, top + 48, height);
+      return surface_row(Surface::account, type, text, style, id, top, height);
     });
     statistics_height = statistics_form.create([this](const wchar_t* type, const wchar_t* text, DWORD style,
         int id, int top, int height) {
@@ -1284,8 +1288,7 @@ struct SettingsWindow::State {
     const auto row = [this](const wchar_t* type, const wchar_t* text, DWORD style, int id, int top, int height) {
       return surface_row(Surface::plugins, type, text, style, id, top, height);
     };
-    row(L"BUTTON", L"打开社区插件与发布", WS_TABSTOP | BS_PUSHBUTTON | BS_NOTIFY, CommunityPluginForm::open, 0, 32);
-    plugins_height = 48 + plugin_effects_form.create([&](const wchar_t* type, const wchar_t* text, DWORD style, int id, int top, int height) { return row(type, text, style, id, top + 48, height); });
+    plugins_height = plugin_effects_form.create(row);
     plugins_height = plugin_library_form.create(row, plugins_height + 24);
     plugins_height = plugin_scripts_form.create(row, plugins_height + 24);
     plugins_height = plugin_mentions_form.create(row, plugins_height + 24);
@@ -1572,12 +1575,42 @@ struct SettingsWindow::State {
         top += 120;
       }
     }
+    if (SchemeForm::offers("quanpin")) {
+      item(L"BUTTON", L"连续多语言输入（实验）", WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY,
+          multilingual_enabled, top, 28);
+      item(L"STATIC", L"开启候选混输后，在全拼 26 键中连续输入所选语言的编码；完整中文优先，混合结果作为备选。至少需要两种可用语言。", SS_LEFT, -1, top + 36, 70);
+      top += 116;
+      for (const auto& option : multilingual_options) {
+        if constexpr (!MSIME_EDITION_TEMPORARY_JAPANESE) {
+          if (option.first == multilingual_japanese) continue;
+        }
+        item(L"BUTTON", option.second, WS_TABSTOP | BS_AUTOCHECKBOX | BS_NOTIFY, option.first, top, 28);
+        top += 42;
+      }
+      if constexpr (MSIME_EDITION_TEMPORARY_JAPANESE) {
+        item(L"STATIC", L"日文使用已有词典，未安装或准备中时暂不参与。", SS_LEFT, -1, top, 48);
+        top += 58;
+      }
+    }
     item(L"STATIC", L"云候选服务", SS_LEFT, -1, top + 12, 28);
     candidates_height = cloud_form.create(item, top + 60);
   }
 
   static const Json& candidate_group(const Json& preferences, const CandidateCheck& field) {
     return *field.group ? preferences.at(field.group) : preferences;
+  }
+
+  inline static const std::array<std::pair<int, const wchar_t*>, 3> multilingual_options{{
+      {multilingual_chinese, L"连续输入：中文"}, {multilingual_english, L"连续输入：英文"},
+      {multilingual_japanese, L"连续输入：日文"}}};
+  inline static const std::array<const char*, 3> multilingual_languages{{"chinese", "english", "japanese"}};
+
+  static Json multilingual_document(const Json& preferences) {
+    auto document = preferences.value("multilingual_input", Json::object());
+    // 只补缺省字段；显式空列表、未展示语言和未来字段均保留。
+    if (!document.contains("enabled")) document["enabled"] = false;
+    if (!document.contains("languages")) document["languages"] = multilingual_languages;
+    return document;
   }
 
   void refresh_candidates() {
@@ -1589,6 +1622,13 @@ struct SettingsWindow::State {
             candidate_group(preferences, field).value(field.field, field.fallback) ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(GetDlgItem(body, mixed_first_page_count), CB_SETCURSEL,
         preferences.at("mixed_input").value("first_page_count", 1) - 1, 0);
+    const auto multilingual = multilingual_document(preferences);
+    SendMessageW(GetDlgItem(body, multilingual_enabled), BM_SETCHECK,
+        multilingual.at("enabled").get<bool>() ? BST_CHECKED : BST_UNCHECKED, 0);
+    const auto& languages = multilingual.at("languages");
+    for (size_t index = 0; index < multilingual_options.size(); ++index)
+      SendMessageW(GetDlgItem(body, multilingual_options[index].first), BM_SETCHECK,
+          std::find(languages.begin(), languages.end(), multilingual_languages[index]) != languages.end() ? BST_CHECKED : BST_UNCHECKED, 0);
     cloud_form.refresh(preferences.at("cloud_candidate_provider"));
   }
 
@@ -1615,6 +1655,10 @@ struct SettingsWindow::State {
         EnableWindow(control, enabled && (field.id == mixed_enabled || std::string_view(field.group) != "mixed_input" || mixed));
     EnableWindow(GetDlgItem(body, mixed_first_page_count), enabled && mixed && snapshot &&
         snapshot->preferences().at("mixed_input").at("english").get<bool>());
+    EnableWindow(GetDlgItem(body, multilingual_enabled), enabled);
+    const bool multilingual = snapshot && multilingual_document(snapshot->preferences()).at("enabled").get<bool>();
+    for (const auto& option : multilingual_options)
+      EnableWindow(GetDlgItem(body, option.first), enabled && mixed && multilingual);
     cloud_form.enable(enabled);
     mode_form.enable(enabled);
     advanced_form.enable(enabled);
@@ -2769,6 +2813,19 @@ struct SettingsWindow::State {
       const auto selected = SendMessageW(GetDlgItem(body, id), CB_GETCURSEL, 0, 0);
       if (selected < 0 || selected > 2) return;
       job.changes.push_back({{"mixed_input", "first_page_count"}, selected + 1});
+    } else if (id >= multilingual_enabled && id <= multilingual_japanese && HIWORD(command) == BN_CLICKED) {
+      const auto control = GetDlgItem(body, id);
+      if (!snapshot || !control || !IsWindowEnabled(control)) return;
+      auto document = multilingual_document(snapshot->preferences());
+      const bool checked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+      if (id == multilingual_enabled) document["enabled"] = checked;
+      else {
+        const auto language = multilingual_languages[static_cast<size_t>(id - multilingual_chinese)];
+        auto& languages = document["languages"];
+        languages.erase(std::remove(languages.begin(), languages.end(), language), languages.end());
+        if (checked) languages.push_back(language);
+      }
+      job.changes.push_back({{"multilingual_input"}, std::move(document)});
     } else if (id == punctuation_mode && HIWORD(command) == CBN_SELCHANGE) {
       const auto selected = SendMessageW(GetDlgItem(body, id), CB_GETCURSEL, 0, 0);
       if (selected < 0 || static_cast<size_t>(selected) >= ps::mode_choices.size()) return;

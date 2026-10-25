@@ -2124,46 +2124,20 @@ std::vector<std::wstring> json_texts(JsonObject const &object, wchar_t const *ke
   return values;
 }
 
-// The content type and bytes of a msime_client_skin_resource answer, {"ok":true,"value":{"contentType":...,"bytes":[...]}}. The byte array is read by hand: an image of a few hundred kilobytes is that many JSON numbers, which Windows.Data.Json would turn into as many objects.
+// The content type and bytes of a msime_client_skin_resource answer asked for with encoding:"base64", {"ok":true,"value":{"contentType":...,"bytesBase64":...}}. The default `bytes` array would cost the shared layer a JSON value per byte (about 512 MiB at the 8 MiB resource limit) and `take_response`'s Windows.Data.Json parse an object per byte.
 std::optional<std::pair<std::string, std::vector<uint8_t>>>
 skin_resource_bytes(std::string const &answer) {
-  const std::string type_key = "\"contentType\":\"";
-  const std::string bytes_key = "\"bytes\":[";
-  const auto type_at = answer.find(type_key);
-  const auto bytes_at = answer.find(bytes_key);
-  if (type_at == std::string::npos || bytes_at == std::string::npos)
+  try {
+    const auto value = JsonObject::Parse(text(answer)).GetNamedObject(L"value");
+    const auto buffer = Windows::Security::Cryptography::CryptographicBuffer::DecodeFromBase64String(
+        value.GetNamedString(L"bytesBase64"));
+    com_array<uint8_t> bytes;
+    Windows::Security::Cryptography::CryptographicBuffer::CopyToByteArray(buffer, bytes);
+    return std::pair{utf8(value.GetNamedString(L"contentType")),
+                     std::vector<uint8_t>(bytes.begin(), bytes.end())};
+  } catch (hresult_error const &) {
     return std::nullopt;
-  const auto type_start = type_at + type_key.size();
-  const auto type_end = answer.find('"', type_start);
-  if (type_end == std::string::npos)
-    return std::nullopt;
-  std::vector<uint8_t> bytes;
-  size_t at = bytes_at + bytes_key.size();
-  unsigned value = 0;
-  bool digits = false;
-  bool closed = false;
-  for (; at < answer.size() && !closed; ++at) {
-    const char c = answer[at];
-    if (c >= '0' && c <= '9') {
-      value = value * 10 + static_cast<unsigned>(c - '0');
-      if (value > 255)
-        return std::nullopt;
-      digits = true;
-    } else if (c == ',' || c == ']') {
-      if (digits)
-        bytes.push_back(static_cast<uint8_t>(value));
-      else if (c == ',' || !bytes.empty())
-        return std::nullopt;
-      value = 0;
-      digits = false;
-      closed = c == ']';
-    } else if (c != ' ') {
-      return std::nullopt;
-    }
   }
-  if (!closed)
-    return std::nullopt;
-  return std::pair{answer.substr(type_start, type_end - type_start), std::move(bytes)};
 }
 
 // 只由这款包组成的自定义主题配色；排列取包支持的一种，面板确认可画后才使用 panel_drawn 配色。
@@ -2197,6 +2171,7 @@ std::vector<uint8_t> skin_image(std::string const &root, std::wstring const &id,
   request.SetNamedValue(L"id", JsonValue::CreateStringValue(hstring(id)));
   request.SetNamedValue(L"relative", JsonValue::CreateStringValue(hstring(relative)));
   request.SetNamedValue(L"kind", JsonValue::CreateStringValue(L"image"));
+  request.SetNamedValue(L"encoding", JsonValue::CreateStringValue(L"base64"));
   const auto body = utf8(request.Stringify());
   const auto response = take_response(
       msime_client_skin_resource(reinterpret_cast<const uint8_t *>(body.data()), body.size()));
@@ -9521,13 +9496,13 @@ private:
           // ResourceDetail 的 unpublish 只关上详情：列表不重读，也不说明。
           if constexpr (resource_item<Item>) {
             gallery_end<Item>();
-            return;
+          } else {
+            gallery.installed = false;
+            gallery.confirm_replace = false;
+            gallery.notice = message;
+            gallery_list<Item>(gallery.active_search, false, gallery.active_mine,
+                               [this](bool) { gallery_end<Item>(); });
           }
-          gallery.installed = false;
-          gallery.confirm_replace = false;
-          gallery.notice = message;
-          gallery_list<Item>(gallery.active_search, false, gallery.active_mine,
-                             [this](bool) { gallery_end<Item>(); });
         });
   }
 
@@ -13654,12 +13629,27 @@ private:
     append_row_frame(group, save).Padding(Thickness{row_inset, 10, row_inset, 10});
   }
 
-  // Windows 原生设置页也提供共享设置页中的神经联想和 octagram 语法模型管理。
-  void build_sentence_model_settings(StackPanel const &group) {
+  void request_sentence_packs() {
     if (!indexing_ && sentence_pack_statuses_.empty() && !sentence_packs_requested_) {
       sentence_packs_requested_ = true;
       refresh_sentence_packs();
     }
+  }
+
+  // 安装包不带落定重排模型（Prepare-PackageFiles.ps1），与共享页一样在「桌面神经联想」打开时给出它的下载行，否则开关打开了也没有模型可用。
+  void build_neural_desktop_settings(StackPanel const &group) {
+    bool_row(group, 0xE8C1, L"桌面神经联想",
+             L"使用神经模型重排整句候选；没有模型时保持现有候选",
+             L"sentence_association.neural_desktop", false, true);
+    if (!document_.Boolean(L"sentence_association.neural_desktop", false))
+      return;
+    request_sentence_packs();
+    sentence_pack_row(group, L"settled-model", L"神经联想模型");
+  }
+
+  // Windows 原生设置页也提供共享设置页中的 octagram 语法模型管理。
+  void build_sentence_model_settings(StackPanel const &group) {
+    request_sentence_packs();
     const std::wstring model = document_.String(L"sentence_association.grammar_model", L"none");
     std::vector<Option> choices = {
         {L"none", L"不使用"},
@@ -13677,8 +13667,12 @@ private:
             L"octagram 语法模型给整句候选加分；模型按需下载，不随安装包。选择后切换一次输入框生效。",
             selector);
     const auto pack = grammar_pack_for_model(model);
-    if (pack.empty())
-      return;
+    if (!pack.empty())
+      sentence_pack_row(group, pack, L"模型文件");
+  }
+
+  void sentence_pack_row(StackPanel const &group, std::wstring const &pack,
+                         std::wstring const &title) {
     const auto status = sentence_pack_status(pack);
     const bool installing = sentence_pack_installing_.count(pack) > 0;
     const bool removing = sentence_pack_removing_.count(pack) > 0;
@@ -13707,7 +13701,7 @@ private:
                                                 loaded_));
     if (installing)
       actions.Children().Append(button_control(L"取消", [this, pack] { cancel_sentence_pack(pack); }, true));
-    add_row(group, 0xE8C1, L"模型文件", subtitle, actions);
+    add_row(group, 0xE8C1, title, subtitle, actions);
   }
 
   static std::wstring grammar_pack_for_model(std::wstring const &model) {
@@ -13746,8 +13740,8 @@ private:
                 continue;
               const auto object = item.GetObject();
               const auto id = named_string(object, L"id");
-              if (id == L"grammar-model-wanxiang" || id == L"grammar-model-baguwen" ||
-                  id == L"grammar-model-baguwen-compact")
+              if (id == L"settled-model" || id == L"grammar-model-wanxiang" ||
+                  id == L"grammar-model-baguwen" || id == L"grammar-model-baguwen-compact")
                 sentence_pack_statuses_.push_back({id, named_string(object, L"state")});
             }
             redraw_input();
@@ -13799,7 +13793,11 @@ private:
   }
 
   fire_and_forget remove_sentence_pack(std::wstring const &id) {
-    if (!co_await confirm(L"删除语法模型", L"删除后切换输入框即可退回无语法模型的候选行为。确定删除？", L"删除"))
+    const bool settled = id == L"settled-model";
+    if (!co_await confirm(settled ? L"删除桌面神经联想模型" : L"删除语法模型",
+                          settled ? L"删除后切换输入框即可退回不经神经模型重排的整句候选。确定删除？"
+                                  : L"删除后切换输入框即可退回无语法模型的候选行为。确定删除？",
+                          L"删除"))
       co_return;
     const auto root = state_directory();
     if (root.empty() || !root.is_absolute()) co_return;
@@ -13820,6 +13818,45 @@ private:
           refresh_sentence_packs();
           redraw_input();
         });
+  }
+
+  // 语言列表缺省才使用共享默认值；显式空列表保留为全不选。
+  void build_multilingual_input(StackPanel const &group, bool mixed_enabled) {
+    if (!edition_offers_scheme(L"quanpin"))
+      return;
+    const bool enabled = document_.Boolean(L"multilingual_input.enabled", false);
+    bool_row(group, 0xE774, L"连续多语言输入（实验）",
+             L"开启候选混输后，在全拼 26 键中连续输入所选语言的编码；完整中文优先，混合结果作为备选。至少需要两种可用语言",
+             L"multilingual_input.enabled", false, true);
+    const auto stored = document_.Value(L"multilingual_input.languages");
+    const auto languages = stored && stored.ValueType() == JsonValueType::Array
+                               ? document_.Strings(L"multilingual_input.languages")
+                               : std::vector<std::wstring>{L"chinese", L"english", L"japanese"};
+    for (auto const &option : std::vector<Option>{{L"chinese", L"中文"},
+                                                 {L"english", L"英文"},
+                                                 {L"japanese", L"日文"}}) {
+      if constexpr (!MSIME_EDITION_TEMPORARY_JAPANESE) {
+        if (option.value == L"japanese")
+          continue;
+      }
+      const auto language = option.value;
+      const auto title = L"连续输入：" + option.label;
+      add_row(group, 0xE774, title,
+              language == L"japanese" ? L"使用已有日文词典，未安装或准备中时暂不参与" : L"",
+              toggle_control(title, std::find(languages.begin(), languages.end(), language) != languages.end(),
+                             [this, language](bool selected) {
+                               change([&](PreferencesDocument &doc) {
+                                 const auto value = doc.Value(L"multilingual_input.languages");
+                                 auto next = value && value.ValueType() == JsonValueType::Array
+                                                 ? doc.Strings(L"multilingual_input.languages")
+                                                 : std::vector<std::wstring>{L"chinese", L"english", L"japanese"};
+                                 next.erase(std::remove(next.begin(), next.end(), language), next.end());
+                                 if (selected)
+                                   next.push_back(language);
+                                 doc.SetOrderedStrings(L"multilingual_input.languages", next);
+                               }, false);
+                             }, enabled && mixed_enabled));
+    }
   }
 
   // 「候选与联想」「输出设置」「高级选项」三个标签的内容，与共享页 InputSharedSettingsSection 的 candidates、output、advanced 三块相同。
@@ -13863,15 +13900,14 @@ private:
                  L"全拼、双拼里打出完整的日文罗马字时补充一个日文候选（如 ohayou → おはよう）；词典不在时不生效",
                  L"mixed_input.japanese", false, false, mixed_enabled);
       }
+      build_multilingual_input(candidates_more, mixed_enabled);
       bool_row(candidates_more, 0xE8C1, L"只出单字",
                L"候选只列单个汉字，不出词组和整句；选一个字后接着拼下一个字",
                L"single_character_only", false);
       bool_row(candidates_more, 0xE8C1, L"本地整句联想",
                L"把词库组合出的整句加入候选；关闭后仍保留单词候选",
                L"sentence_association.word_lattice", true);
-      bool_row(candidates, 0xE8C1, L"桌面神经联想",
-               L"使用神经模型重排整句候选；没有模型时保持现有候选",
-               L"sentence_association.neural_desktop", false, true);
+      build_neural_desktop_settings(candidates);
       bool_row(candidates, 0xE8C1, L"去重后补充次选",
                L"某个模型的首选与已有候选重复时，显示该模型排名最高的下一条不同结果",
                L"sentence_association.show_next_on_duplicate", false);
@@ -14966,6 +15002,7 @@ private:
   void set_lexicon_feedback(std::wstring message, InfoBarSeverity severity) {
     lexicon_feedback_ = std::move(message);
     lexicon_feedback_severity_ = severity;
+    lexicon_feedback_reveal_ = true;
     if (!closed_ && current_page_ == "lexicon")
       queue_refresh();
   }
@@ -15141,13 +15178,18 @@ private:
                          JsonValue::CreateStringValue(request_id(previous ? L"ui-edit-" : L"ui-add-")));
     const uint32_t reload = previous ? lexicon_offset_ : 0;
     lexicon_feedback_.clear();
-    lexicon_request(action, [this, kind, reload](Response const &response) {
+    const bool added = !previous;
+    lexicon_request(action, [this, kind, reload, added, key = replacement.key](Response const &response) {
       if (!response.ok) {
         set_lexicon_feedback(dictionary_error_text(response_error(response), kind,
                                                    lexicon_kind_label(kind) + L"保存失败，请稍后重试。"),
                              InfoBarSeverity::Error);
         return;
       }
+      // 列表按个人词条、权重排，新词条不一定落在第一页上；只换列表的话，看不见它的人只能当作没加上（#9434）。
+      set_lexicon_feedback(added ? L"已添加到" + lexicon_kind_label(kind) + L"，编码 " + key + L"。"
+                                 : L"已保存。",
+                           InfoBarSeverity::Success);
       lexicon_list(reload);
     });
   }
@@ -15929,6 +15971,23 @@ private:
     A11y::SetAutomationId(bar, L"lexicon-feedback");
     bar.Margin(Thickness{0, 12, 0, 0});
     bar.Closed([this](InfoBar const &, InfoBarClosedEventArgs const &) { lexicon_feedback_.clear(); });
+    // 结果条画在页内标签下面，「新增词条」「导入」却在页面下方：窗口不够高、页面往下滚过时，新的结果正好落在视野外面，看上去点了什么也没发生（#9434）。新的结果画出来后滚进视野一次；先等这一轮其余的 Loaded（render_page_at 恢复滚动位置）跑完，换下来的旧结果条不滚。
+    if (lexicon_feedback_reveal_)
+      bar.Loaded([weak = get_weak()](Inspectable const &sender, RoutedEventArgs const &) {
+        auto self = weak.get();
+        if (!self)
+          return;
+        self->DispatcherQueue().TryEnqueue(
+            Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
+            [weak, shown = sender.as<InfoBar>()] {
+              auto self = weak.get();
+              if (!self || self->closed_ || !self->lexicon_feedback_reveal_ ||
+                  self->lexicon_feedback_bar_ != shown)
+                return;
+              self->lexicon_feedback_reveal_ = false;
+              shown.StartBringIntoView();
+            });
+      });
     return bar;
   }
 
@@ -24539,6 +24598,8 @@ private:
   Border lexicon_results_host_{nullptr};
   // 页上正画着的操作结果条，查询条件变化时就地收起它（clear_lexicon_feedback_for_query）；没画时为空。
   InfoBar lexicon_feedback_bar_{nullptr};
+  // 刚有新的操作结果，结果条画出来后要滚进视野一次（make_lexicon_feedback）。
+  bool lexicon_feedback_reveal_ = false;
   bool lexicon_results_queued_ = false;
   Microsoft::UI::Dispatching::DispatcherQueueTimer lexicon_search_timer_{nullptr};
   // 导入导出的文件格式，跨重画保留；换到不能用它的词库类型时退回标准格式。

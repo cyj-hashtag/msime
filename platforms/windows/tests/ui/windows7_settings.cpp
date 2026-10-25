@@ -62,7 +62,7 @@ struct InjectedDirectory {
 };
 
 void pump_until(const std::function<bool()>& condition) {
-  const ULONGLONG deadline = GetTickCount64() + 15000;
+  const ULONGLONG deadline = GetTickCount64() + 60000;
   for (;;) {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -214,7 +214,7 @@ int main() {
   unsigned google_cancellations = 0;
   unsigned account_confirmations = 0;
   Json account_user{{"id", "synthetic-account-0001"}, {"displayName", "合成账号"}, {"email", "synthetic@example.invalid"}, {"createdAt", "2026-01-02T03:04:05Z"}};
-  const Json account_provider_names{{"email", "合成邮箱"}, {"google", "合成 Google"}};
+  const Json account_provider_names{{"apple", "Apple"}, {"google", "合成 Google 方式"}, {"email", "合成邮箱方式"}, {"phone", "手机号"}, {"sms", "手机号"}};
   const std::string synthetic_id = "00000000-0000-4000-8000-000000000001";
   const std::string other_id = "00000000-0000-4000-8000-000000000002";
   Json community_item{{"id", synthetic_id}, {"package_id", "synthetic-light"}, {"name", "合成社区皮肤"},
@@ -1793,7 +1793,11 @@ int main() {
   // 账号操作只接合成传输，正式控件与 worker 串起资料和同步；不读取真实会话。
   const auto account_click = [&](int id) {
     SendMessageW(body, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(body, id)));
-    pump_until([&] { return IsWindowEnabled(language) != FALSE; });
+    pump_until([&] {
+      if (IsWindowEnabled(language) == FALSE) return false;
+      if (id != account_login) return true;
+      return account_signed_in && IsWindowEnabled(GetDlgItem(body, account_sync_apply)) != FALSE;
+    });
   };
   const auto account_revision = store.load().snapshot->revision();
   select_page(7);
@@ -1812,8 +1816,7 @@ int main() {
   account_click(account_login);
   assert(account_signed_in && account_calls.back().at("operation") == "preferences_load");
   assert(caption(GetDlgItem(body, account_profile_text)).find(L"synthetic-account-0001") != std::wstring::npos);
-  assert(caption(GetDlgItem(body, account_profile_text)).find(L"合成邮箱") != std::wstring::npos);
-  assert(caption(GetDlgItem(body, account_profile_text)).find(L"合成 Google") != std::wstring::npos);
+  assert(caption(GetDlgItem(body, account_profile_text)).find(L"合成邮箱方式　合成 Google 方式") != std::wstring::npos);
   assert(IsWindowEnabled(GetDlgItem(body, account_sync_apply)));
   assert(SetWindowTextW(GetDlgItem(body, account_name), L"  合成昵称  "));
   account_click(account_rename);

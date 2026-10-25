@@ -21,8 +21,8 @@ pub mod mcp_clients;
 pub mod settings_dictionary;
 pub mod system_fonts;
 use msime_client_core::preferences::{
-    InputScheme, KoreanLayout, KoreanPreferences, NineKeyShuangpinProfile, Preferences,
-    PreferencesSnapshot, PreferencesStore, ShuangpinCustomProfile, ShuangpinProfile,
+    InputScheme, KoreanLayout, KoreanPreferences, MultilingualLanguage, NineKeyShuangpinProfile,
+    Preferences, PreferencesSnapshot, PreferencesStore, ShuangpinCustomProfile, ShuangpinProfile,
     TouchKeyboardLayout, TouchKeyboardScheme, TouchShuangpinLayout, VietnameseInputMethod,
     VietnamesePreferences, VietnameseToneStyle, WubiProfile,
 };
@@ -258,7 +258,7 @@ fn engine_handwriting_candidates(
     _width: f32,
     _height: f32,
 ) -> Result<Vec<String>, &'static str> {
-    // Android injects ML Kit Digital Ink through HandwritingRecognizer and HarmonyOS uses its own recognizer. Keeping this boundary unavailable there prevents zinnia and its model path from becoming an unused second recognizer in the IME process.
+    // 共享桌面面板入口在移动端禁用；Android 注入 ML Kit，鸿蒙原生手写板通过 msime_client_handwriting 调用引擎的单字识别器。
     Err("local handwriting recognizer unavailable")
 }
 
@@ -348,6 +348,47 @@ fn chaizi_enabled(preferences: &msime_client_core::preferences::LocalModePrefere
     preferences.chaizi.unwrap_or(TOUCH_KEYBOARD_HOST)
 }
 
+fn multilingual_languages_for(
+    preferences: &Preferences,
+    edition: &Edition,
+    has_japanese_model: bool,
+) -> Vec<msime_engine::multilingual::Language> {
+    // 连续多语言解码仅接在全拼；五笔混拼不等于提供全拼输入方案。
+    if !edition.offers(InputScheme::Quanpin) {
+        return Vec::new();
+    }
+    let languages = preferences
+        .multilingual_input
+        .active_languages()
+        .into_iter()
+        .filter_map(|language| match language {
+            MultilingualLanguage::Chinese => Some(msime_engine::multilingual::Language::Chinese),
+            MultilingualLanguage::English => Some(msime_engine::multilingual::Language::English),
+            MultilingualLanguage::Japanese
+                if has_japanese_model && edition.features.temporary_japanese =>
+            {
+                Some(msime_engine::multilingual::Language::Japanese)
+            }
+            MultilingualLanguage::Japanese => None,
+        })
+        .collect::<Vec<_>>();
+    if languages.len() >= 2 {
+        languages
+    } else {
+        Vec::new()
+    }
+}
+
+fn japanese_model_available(options: &EngineOptions) -> bool {
+    if options.japanese_dictionary.is_empty() {
+        Path::new(&options.resources)
+            .join("msime-japanese.dat")
+            .is_file()
+    } else {
+        Path::new(&options.japanese_dictionary).is_file()
+    }
+}
+
 fn apply_local_mode_resource_gates(options: &mut EngineOptions, edition: &Edition) {
     let resources = std::path::Path::new(&options.resources);
     let has_emoji_catalog = resources.join("msime-others.db").is_file();
@@ -364,6 +405,13 @@ fn apply_local_mode_resource_gates(options: &mut EngineOptions, edition: &Editio
     options.local_temporary_japanese &= has_japanese_model && edition.features.temporary_japanese;
     // 日文混输和临时日文读同一份模型、同一个日文 provider（会话方案集里有 `JapaneseRomaji` 才建），门槛也一样；模型不在时只剩假名，不算转换。
     options.mixed_japanese &= has_japanese_model && edition.features.temporary_japanese;
+    options.multilingual_languages.retain(|language| {
+        *language != msime_engine::multilingual::Language::Japanese
+            || (has_japanese_model && edition.features.temporary_japanese)
+    });
+    if options.multilingual_languages.len() < 2 {
+        options.multilingual_languages.clear();
+    }
     // 键盘神经联想读的模型同样随版本的资源锁走；不带它的版本无论偏好怎么写都不打开。
     options.sentence_association.neural_keyboard &= edition.features.neural_keyboard;
 }
@@ -757,6 +805,11 @@ impl HostSession {
         options.mixed_kaomoji = preferences.mixed_input.kaomoji;
         options.mixed_symbols = preferences.mixed_input.symbols;
         options.mixed_japanese = preferences.mixed_input.japanese;
+        options.multilingual_languages = multilingual_languages_for(
+            &preferences,
+            self.edition,
+            japanese_model_available(&options),
+        );
         options.quick_phrase_candidates =
             self.quick_phrase_candidates_requested && preferences.mixed_input.quick_phrase;
         options.quick_phrase_frequency = preferences.mixed_input.quick_phrase_frequency;
@@ -1140,6 +1193,11 @@ impl HostSession {
             .expect("requested snapshot exists")
             .preferences
             .clone();
+        // 繁简只投影混合候选的中文段，不改组字，和宿主的即时输出开关同步。
+        self.runtime.set_multilingual_output(
+            requested_preferences.traditional_chinese_output,
+            requested_preferences.traditional_chinese_variant,
+        );
         self.set_ai_provider_cache(&requested_preferences);
         self.runtime
             .set_english_online_candidates_enabled(requested_preferences.english_online_candidates)
@@ -2059,6 +2117,10 @@ impl HostOptions {
             state_root.as_deref(),
             edition,
         );
+        let has_japanese_model = japanese.as_deref().is_some_and(Path::is_file)
+            || Path::new(&self.resources)
+                .join("msime-japanese.dat")
+                .is_file();
         let mut options = EngineOptions {
             resources: self.resources,
             user_data: self.user_data,
@@ -2095,6 +2157,11 @@ impl HostOptions {
             mixed_kaomoji: self.preferences.mixed_input.kaomoji,
             mixed_symbols: self.preferences.mixed_input.symbols,
             mixed_japanese: self.preferences.mixed_input.japanese,
+            multilingual_languages: multilingual_languages_for(
+                &self.preferences,
+                edition,
+                has_japanese_model,
+            ),
             local_unicode: self.preferences.local_modes.unicode,
             local_date_time: self.preferences.local_modes.date_time,
             local_date_time_inline: self.preferences.local_modes.date_time_inline,
@@ -2775,6 +2842,59 @@ fn replace_options_file(
         &metadata.permissions(),
     )?;
     Ok(())
+}
+
+/// 把输入法进程这次启动准备好的词库代次写进已发布的 `runtime-options.json`，只改 `dictionaries` 一个键；文件已经是这个代次时只读不写。返回是否改写了文件。
+///
+/// Windows 的 Server 每次启动都重新准备宿主（`msime_client_prepare_host`），自己的会话用准备出的文档；`runtime-options.json` 却只在首次运行时写下（`FirstRun.h`）。升级换了词库锁、或者装上了在线词库更新之后，Server 的会话读新代次，而照这份文件工作的设置窗口、`msime-mcp` 和各应用进程里的 TIP 还在旧代次上：设置里新增的快捷短语和五笔词条写进旧代次，Server 要等下次启动回放日志才看得到，用户看到的就是「加了没用」（#9434）。
+///
+/// 只改 `dictionaries`，不动 `resources`：在线词库更新的资源目录在状态目录下，而 Server 启动时从这份文件读 `resources` 并要求它与状态目录不相交，改了会让 Server 下次起不来。词库新增、编辑和查找都只经过代次里的工作副本，`resources` 留在安装包目录不影响它们。两份文档都必须是准备布局（[`prepared_layout`]）且属于同一个状态目录，否则原样不动；写入的路径沿用文件自己的拼写，只换代次目录名。
+pub fn publish_prepared_dictionaries(
+    path: &Path,
+    prepared: &Value,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let parent = path.parent().ok_or("runtime options have no directory")?;
+    let name = path
+        .file_name()
+        .ok_or("runtime options have no file name")?;
+    let directory = msime_client_core::file_lock::open_private_directory(parent)?;
+    reject_symlinked_options_parent(path)?;
+    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let file = msime_client_core::file_lock::open_private_file_at(&directory, name)?;
+    let metadata = file.metadata()?;
+    let bytes = crate::bounded_file::read(file, HOST_OPTIONS_DOCUMENT_LIMIT as u64)?;
+    let mut document: Value = serde_json::from_slice(&bytes)?;
+    let (Some((_, published, state)), Some((_, generation, prepared_state))) =
+        (prepared_layout(&document), prepared_layout(prepared))
+    else {
+        return Ok(false);
+    };
+    // 同一个状态目录可以写成不同的字面路径（Windows 的盘符大小写、短文件名），按规范化后的路径比较；文件记的状态目录已经不在，就不是这次准备的宿主的文件。
+    let same_state = std::fs::canonicalize(state).is_ok_and(|state| {
+        std::fs::canonicalize(prepared_state).is_ok_and(|prepared| state == prepared)
+    });
+    if !same_state {
+        return Ok(false);
+    }
+    // 两份文档的拼写可能不同，只取代次目录名，接在文件自己的 `user_data/dictionaries` 下：照搬准备出的整条路径会让 `dictionaries` 与文件里的 `user_data` 拼写不一致，文件从此不再是准备布局，之后的发布和刷新都会跳过它。
+    let (Some(current), Some(generation_name)) = (published.parent(), generation.file_name())
+    else {
+        return Ok(false);
+    };
+    if published.file_name() == Some(generation_name) {
+        return Ok(false);
+    }
+    document["dictionaries"] = Value::String(
+        current
+            .join(generation_name)
+            .to_str()
+            .ok_or("dictionary generation path is not UTF-8")?
+            .to_owned(),
+    );
+    replace_options_file(&directory, name, &metadata, &document)?;
+    Ok(true)
 }
 
 /// 随包资源所在的目录：安装包里 Engine 资源目录的上一级，设置应用在这里找背单词的内置词书（`wordbooks/`）。

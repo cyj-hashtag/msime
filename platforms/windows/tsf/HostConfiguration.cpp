@@ -35,14 +35,23 @@ std::shared_ptr<const HostConfiguration> LoadConfiguration(
   if (next->directory.empty()) next->directory = default_state_directory();
   if (next->directory.empty()) return previous;
   if (const auto value = LoadPreferences(next->directory, initial)) {
-    next->preferences = (*value)["preferences"];
-    next->preferenceSnapshot = value->dump();
+    const auto revision = value->find("revision");
+    if (revision != value->end() && revision->is_number_unsigned() &&
+        (!previous || revision->get<std::uint64_t>() >= previous->revision)) {
+      next->revision = revision->get<std::uint64_t>();
+      next->preferences = (*value)["preferences"];
+      next->preferenceSnapshot = value->dump();
+    }
   }
   const auto options = read_prepared_host_options(
       std::filesystem::u8path(next->directory) / L"runtime-options.json");
   const auto parsed = nlohmann::json::parse(options, nullptr, false);
   if (parsed.is_object()) {
     next->hostOptions = options;
+    const auto user = parsed.find("user_data");
+    next->userData = user != parsed.end() && user->is_string()
+                         ? std::filesystem::u8path(user->get<std::string>())
+                         : std::filesystem::path{};
     const auto directory = parsed.find("language_dictionaries");
     if (directory != parsed.end() && directory->is_string()) {
       const auto path = std::filesystem::u8path(directory->get<std::string>());

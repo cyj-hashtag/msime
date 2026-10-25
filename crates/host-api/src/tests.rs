@@ -67,6 +67,40 @@ fn selection_statistics_use_the_candidate_id_absolute_index() {
 }
 
 #[test]
+fn multilingual_preference_mapping_filters_unavailable_japanese_and_needs_two_languages() {
+    use msime_client_core::preferences::MultilingualLanguage;
+    let mut preferences = Preferences::default();
+    preferences.multilingual_input.enabled = true;
+    preferences.multilingual_input.languages = vec![
+        MultilingualLanguage::Chinese,
+        MultilingualLanguage::English,
+        MultilingualLanguage::Japanese,
+    ];
+    assert_eq!(
+        multilingual_languages_for(&preferences, Edition::full(), true),
+        vec![
+            msime_engine::multilingual::Language::Chinese,
+            msime_engine::multilingual::Language::English,
+            msime_engine::multilingual::Language::Japanese,
+        ]
+    );
+    assert_eq!(
+        multilingual_languages_for(&preferences, Edition::full(), false),
+        vec![
+            msime_engine::multilingual::Language::Chinese,
+            msime_engine::multilingual::Language::English,
+        ]
+    );
+    for id in ["wubi", "japanese", "vietnamese", "tibetan"] {
+        assert!(
+            multilingual_languages_for(&preferences, Edition::by_id(id).unwrap(), true).is_empty()
+        );
+    }
+    preferences.multilingual_input.languages = vec![MultilingualLanguage::Japanese];
+    assert!(multilingual_languages_for(&preferences, Edition::full(), true).is_empty());
+}
+
+#[test]
 fn completed_transition_keeps_dispatch_view_without_pending_changes() {
     let directory = tempfile::tempdir().unwrap();
     let handle = test_host(directory.path());
@@ -326,6 +360,7 @@ fn local_mode_resource_gates_preserve_unrelated_modes() {
         mixed_kaomoji: false,
         mixed_symbols: false,
         mixed_japanese: true,
+        multilingual_languages: Vec::new(),
         local_unicode: true,
         local_date_time: true,
         local_date_time_inline: true,
@@ -3260,16 +3295,21 @@ fn creating_a_session_records_the_resources_it_loaded_for_dictionary_updates() {
 /// 三端宿主都开着 `phrase_preedit`。14 键里选了只覆盖前一段的词，退格到只剩一个组码再退格，收回这次选词：组码要回到 14 键网格里，而不是变成全拼 26 键的 `bu`，之后的 14 键照样能打。
 #[test]
 fn retreating_a_fourteen_key_selection_keeps_composing_on_the_grid() {
-    check_letter_key_selection_retreat(false, false);
-    check_letter_key_selection_retreat(true, false);
+    check_letter_key_selection_retreat(false, false, false);
+    check_letter_key_selection_retreat(true, false, false);
 }
 
 #[test]
 fn eighteen_key_shuangpin_selection_retreat_keeps_composing_on_the_grid() {
-    check_letter_key_selection_retreat(true, true);
+    check_letter_key_selection_retreat(true, true, false);
 }
 
-fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool) {
+#[test]
+fn eighteen_key_exact_selection_retreat_preserves_letter_constraints() {
+    check_letter_key_selection_retreat(true, true, true);
+}
+
+fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool, exact: bool) {
     let dir = tempfile::tempdir().unwrap();
     let path = |name| {
         let path = dir.path().join(name);
@@ -3327,14 +3367,18 @@ fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool) {
     }
 
     // 全拼「你好」是 BN UI GH AS OP，小鹤双拼是 BN UI GH CV。
-    let codes = if eighteen {
+    let codes = if exact {
+        "NiHC"
+    } else if eighteen {
         "bihx"
     } else if shuangpin {
         "bugc"
     } else {
         "bugao"
     };
-    let tail = if eighteen {
+    let tail = if exact {
+        "HC"
+    } else if eighteen {
         "hx"
     } else if shuangpin {
         "gc"
@@ -3363,7 +3407,13 @@ fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool) {
     }
     assert_eq!(
         read(msime_client_view(handle))["value"]["editing_text"],
-        if eighteen { "h" } else { "g" }
+        if exact {
+            "H"
+        } else if eighteen {
+            "h"
+        } else {
+            "g"
+        }
     );
 
     let restored = read(msime_client_command(handle, 0));
@@ -3379,7 +3429,13 @@ fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool) {
     );
     assert_eq!(
         view["editing_text"],
-        if eighteen { "bi" } else { "bu" },
+        if exact {
+            "Ni"
+        } else if eighteen {
+            "bi"
+        } else {
+            "bu"
+        },
         "{restored}"
     );
     assert!(
@@ -3393,14 +3449,36 @@ fn check_letter_key_selection_retreat(shuangpin: bool, eighteen: bool) {
         !view["nine_key_spellings"].as_array().unwrap().is_empty(),
         "{restored}"
     );
+    if exact {
+        assert!(
+            !view["nine_key_spellings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s == "bi"),
+            "{restored}"
+        );
+    }
     let next = read(msime_client_grid_key(
         handle,
-        if eighteen { b'h' } else { b'g' },
+        if exact {
+            b'H'
+        } else if eighteen {
+            b'h'
+        } else {
+            b'g'
+        },
     ));
     assert_eq!(next["value"]["handled"], true, "{next}");
     assert_eq!(
         next["value"]["view"]["editing_text"],
-        if eighteen { "bih" } else { "bug" },
+        if exact {
+            "NiH"
+        } else if eighteen {
+            "bih"
+        } else {
+            "bug"
+        },
         "{next}"
     );
     read(msime_client_destroy(handle));
@@ -5741,6 +5819,29 @@ fn skin_resource_bridge_revalidates_kind_and_package_containment() {
     assert_eq!(image["ok"], true);
     assert_eq!(image["value"]["contentType"], "image/png");
     assert_eq!(image["value"]["bytes"], json!([1, 2, 3]));
+    // The iOS keyboard asks for base64 so a large image does not cost a JSON number per byte.
+    let encoded = call(json!({
+        "directory": directory,
+        "id": "sample",
+        "relative": "images/preview.png",
+        "kind": "image",
+        "encoding": "base64"
+    }));
+    assert_eq!(
+        encoded,
+        json!({"ok": true, "value": {"contentType": "image/png", "bytesBase64": "AQID"}})
+    );
+    let unknown_encoding = call(json!({
+        "directory": directory,
+        "id": "sample",
+        "relative": "images/preview.png",
+        "kind": "image",
+        "encoding": "hex"
+    }));
+    assert_eq!(
+        unknown_encoding,
+        json!({"ok": false, "error": "unsupported skin resource encoding"})
+    );
     let font = call(json!({
         "directory": root.to_str().unwrap(),
         "id": "sample",
@@ -7095,6 +7196,143 @@ fn test_host_with_pinyin_fixture(root: &std::path::Path, preferences: Preference
     let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
     assert_eq!(created["ok"], true);
     created["value"]["session"].as_u64().unwrap()
+}
+
+fn test_host_with_multilingual_fixture(root: &std::path::Path, preferences: Preferences) -> u64 {
+    let path = |name| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    };
+    let resources = path("resources");
+    let dictionaries = path("dictionaries");
+    for directory in [&resources, &dictionaries] {
+        rusqlite::Connection::open(directory.join("msime-pinyin.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE tbl_2_w(key TEXT,jp TEXT,value TEXT,weight INTEGER);
+                 INSERT INTO tbl_2_w VALUES('wang''luo','wl','网络',100);",
+            )
+            .unwrap();
+        let english = directory.join("msime-english.db");
+        msime_engine::ensure_english_schema(&english).unwrap();
+        rusqlite::Connection::open(english)
+            .unwrap()
+            .execute_batch("INSERT INTO english_words VALUES('hello','hello',100);")
+            .unwrap();
+    }
+    bundle_wubi_table(&resources);
+    let options = json!({
+        "api_version": 1,
+        "resources": resources,
+        "user_data": path("user"),
+        "cache": path("cache"),
+        "dictionaries": dictionaries,
+        "preferences": preferences
+    })
+    .to_string();
+    let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
+    assert_eq!(created["ok"], true, "{created}");
+    created["value"]["session"].as_u64().unwrap()
+}
+
+#[test]
+fn multilingual_preferences_reach_host_session_and_rebuild() {
+    use msime_client_core::preferences::MultilingualLanguage;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut preferences = chinese_preferences();
+    preferences.multilingual_input.enabled = true;
+    preferences.traditional_chinese_output = true;
+    preferences.multilingual_input.languages =
+        vec![MultilingualLanguage::Chinese, MultilingualLanguage::English];
+    let handle = test_host_with_multilingual_fixture(directory.path(), preferences.clone());
+    SESSIONS.with(|sessions| {
+        assert_eq!(
+            sessions.borrow()[&handle].options.multilingual_languages,
+            vec![
+                msime_engine::multilingual::Language::Chinese,
+                msime_engine::multilingual::Language::English,
+            ]
+        );
+    });
+    assert_eq!(read(msime_client_focus(handle, true))["ok"], true);
+    let mut typed = Value::Null;
+    for byte in b"hellowangluo" {
+        typed = read(msime_client_character(handle, *byte, false));
+    }
+    let mixed = typed["value"]["view"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["source"] == 18)
+        .cloned()
+        .expect("the enabled preference should expose a multilingual candidate");
+    assert_eq!(mixed["text"], "hello網絡");
+    preferences.multilingual_input.enabled = false;
+    preferences.traditional_chinese_output = false;
+    let changed = update(handle, 1, &preferences);
+    assert_eq!(changed["value"]["deferred"], true);
+    assert!(changed["value"]["view"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["source"] == 18 && row["text"] == "hello网络"));
+    let selected = read(msime_client_select(
+        handle,
+        mixed["id"]["generation"].as_u64().unwrap(),
+        mixed["id"]["index"].as_u64().unwrap() as usize,
+    ));
+    assert_eq!(selected["value"]["commit"], "hello网络");
+    assert_eq!(
+        selected["value"]["commit_context"]["script_conversion"],
+        false
+    );
+
+    SESSIONS.with(|sessions| {
+        assert!(sessions.borrow()[&handle]
+            .options
+            .multilingual_languages
+            .is_empty());
+    });
+    preferences.multilingual_input.enabled = true;
+    assert_eq!(update(handle, 2, &preferences)["value"]["deferred"], false);
+    let simplified = type_letters(handle, b"hellowangluo");
+    let mixed = simplified["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["source"] == 18 && row["text"] == "hello网络")
+        .unwrap();
+    preferences.candidate_page_size = 7;
+    assert_eq!(update(handle, 3, &preferences)["value"]["deferred"], true);
+    let switched = read(msime_client_set_multilingual_output(handle, true));
+    assert!(switched["value"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["source"] == 18 && row["text"] == "hello網絡"));
+    let selected = read(msime_client_select(
+        handle,
+        mixed["id"]["generation"].as_u64().unwrap(),
+        mixed["id"]["index"].as_u64().unwrap() as usize,
+    ));
+    assert_eq!(selected["value"]["commit"], "hello網絡");
+    let rebuilt = type_letters(handle, b"hellowangluo");
+    assert!(rebuilt["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["source"] == 18 && row["text"] == "hello網絡"));
+    // 临时宿主投影跨越空闲重建保留，下一次显式偏好更新才接管输出。
+    let reset = update(handle, 4, &preferences);
+    assert!(reset["value"]["view"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["source"] == 18 && row["text"] == "hello网络"));
+
+    assert_eq!(read(msime_client_destroy(handle))["ok"], true);
 }
 
 #[test]
@@ -14339,6 +14577,167 @@ fn only_a_resource_mismatch_counts_as_outdated() {
         assert_eq!(mapped.to_string(), text);
     }
 }
+
+/// 带一张空快捷短语表的合成词库锁：新增快捷短语要有表可写。
+fn quick_phrase_desktop_lock(resources: &Path) -> ResourceSet {
+    let mut set = synthetic_desktop_lock(resources);
+    rusqlite::Connection::open(resources.join("msime-pinyin.db"))
+        .unwrap()
+        .execute_batch("CREATE TABLE quick_parases(key TEXT NOT NULL,value TEXT NOT NULL,weight INTEGER NOT NULL DEFAULT 0,UNIQUE(key,value));")
+        .unwrap();
+    for artifact in &mut set.artifacts {
+        let bytes = std::fs::read(resources.join(&artifact.name)).unwrap();
+        artifact.sha256 = hex::encode(Sha256::digest(&bytes));
+        artifact.size = bytes.len() as u64;
+    }
+    set
+}
+
+/// 设置页新增一条快捷短语（`edit` 不带 `previous`），再按 `options` 列出快捷短语，返回列出的短语。
+fn add_then_browse_quick_phrases(
+    writer: &Value,
+    reader: &Value,
+    key: &str,
+    value: &str,
+) -> Vec<String> {
+    crate::settings_dictionary::request(
+        writer,
+        &json!({
+            "operation": "edit",
+            "previous": null,
+            "replacement": {"kind": "quick_phrase", "key": key, "value": value, "weight": 10, "source": "user"},
+            "request_id": format!("ui-add-{key}"),
+        }),
+        || {},
+    )
+    .unwrap();
+    let request = json!({
+        "options": reader,
+        "action": {"operation": "browse", "kind": "quick_phrase", "query": "", "offset": 0, "limit": 100},
+    });
+    dictionary_request_json(&serde_json::to_vec(&request).unwrap()).unwrap()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["value"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// #9434：Windows 的 runtime-options.json 只在首次运行时写下，Server 每次启动重新准备、会话用准备出的文档。升级换了词库锁之后，设置窗口照文件写进旧代次，Server 的新代次里没有这条短语；把准备好的代次发布进文件之后，新增的短语落在 Server 读的代次里。
+#[test]
+fn the_published_options_follow_the_generation_the_input_method_prepared() {
+    let directory = tempfile::tempdir().unwrap();
+    let resources = directory.path().join("resources");
+    let state = directory.path().join("state");
+    let first = quick_phrase_desktop_lock(&resources);
+    let prepare = |set: &ResourceSet| -> Value {
+        serde_json::from_str(
+            &prepare_host_with_updates(&resources, &state, Edition::full(), set).unwrap(),
+        )
+        .unwrap()
+    };
+    // 首次运行（FirstRun.h）发布的文件。
+    let installed = prepare(&first);
+    let published = state.join("runtime-options.json");
+    std::fs::write(&published, serde_json::to_vec_pretty(&installed).unwrap()).unwrap();
+    // 升级后的 Server 启动：同一个资源目录，新的锁，新的代次。
+    let mut upgraded = first.clone();
+    upgraded.source_commit = "b".repeat(40);
+    let server = prepare(&upgraded);
+    assert_ne!(server["dictionaries"], installed["dictionaries"]);
+
+    let file =
+        |path: &Path| -> Value { serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap() };
+    let listed = add_then_browse_quick_phrases(&file(&published), &server, "zzold", "旧代次短语");
+    assert!(!listed.contains(&"旧代次短语".to_owned()), "{listed:?}");
+
+    assert!(publish_prepared_dictionaries(&published, &server).unwrap());
+    let refreshed = file(&published);
+    assert_eq!(refreshed["dictionaries"], server["dictionaries"]);
+    let mut unchanged = refreshed.clone();
+    unchanged["dictionaries"] = installed["dictionaries"].clone();
+    assert_eq!(unchanged, installed, "only `dictionaries` changes");
+    // 已是当前代次时只读不写。
+    let written = std::fs::metadata(&published).unwrap().modified().unwrap();
+    assert!(!publish_prepared_dictionaries(&published, &server).unwrap());
+    assert_eq!(
+        std::fs::metadata(&published).unwrap().modified().unwrap(),
+        written
+    );
+
+    let listed = add_then_browse_quick_phrases(&refreshed, &server, "zznew", "新代次短语");
+    assert!(listed.contains(&"新代次短语".to_owned()), "{listed:?}");
+}
+
+/// 不是准备布局、或属于别的状态目录的文档原样不动：那不是这次准备的宿主发布的文件。
+#[test]
+fn prepared_dictionaries_are_not_published_into_a_foreign_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let layout = |state: &Path, generation: &str| {
+        json!({
+            "api_version": 1,
+            "resources": directory.path().join("resources"),
+            "user_data": state.join("user"),
+            "cache": state.join("cache"),
+            "dictionaries": state.join("user/dictionaries").join(generation),
+            "preferences_directory": state,
+            "preferences": {},
+        })
+    };
+    let prepared = layout(&state, "current");
+    let published = state.join("runtime-options.json");
+    for document in [
+        layout(&directory.path().join("other"), "previous"),
+        json!({"api_version": 1, "dictionaries": state.join("elsewhere"), "preferences": {}}),
+    ] {
+        let bytes = serde_json::to_vec_pretty(&document).unwrap();
+        std::fs::write(&published, &bytes).unwrap();
+        assert!(!publish_prepared_dictionaries(&published, &prepared).unwrap());
+        assert_eq!(std::fs::read(&published).unwrap(), bytes);
+    }
+    std::fs::write(
+        &published,
+        serde_json::to_vec_pretty(&layout(&state, "previous")).unwrap(),
+    )
+    .unwrap();
+    assert!(publish_prepared_dictionaries(&published, &prepared).unwrap());
+}
+/// 文件和准备出的文档把同一个状态目录写成不同的字面路径时（Windows 上是盘符大小写或短文件名，这里用符号链接模拟），发布只换代次目录名、沿用文件的拼写：文件仍是准备布局，下次换代次照样发布，同一代次不再改写。
+#[cfg(unix)]
+#[test]
+fn a_differently_spelled_state_directory_keeps_the_published_layout() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let alias = directory.path().join("alias");
+    std::os::unix::fs::symlink(&state, &alias).unwrap();
+    let layout = |state: &Path, generation: &str| {
+        json!({
+            "api_version": 1,
+            "resources": directory.path().join("resources"),
+            "user_data": state.join("user"),
+            "cache": state.join("cache"),
+            "dictionaries": state.join("user/dictionaries").join(generation),
+            "preferences_directory": state,
+            "preferences": {},
+        })
+    };
+    let published = state.join("runtime-options.json");
+    std::fs::write(
+        &published,
+        serde_json::to_vec_pretty(&layout(&state, "previous")).unwrap(),
+    )
+    .unwrap();
+    let file = || -> Value { serde_json::from_slice(&std::fs::read(&published).unwrap()).unwrap() };
+
+    assert!(publish_prepared_dictionaries(&published, &layout(&alias, "current")).unwrap());
+    assert_eq!(file(), layout(&state, "current"));
+    assert!(!publish_prepared_dictionaries(&published, &layout(&alias, "current")).unwrap());
+    assert!(publish_prepared_dictionaries(&published, &layout(&alias, "next")).unwrap());
+    assert_eq!(file(), layout(&state, "next"));
+}
 /// 带 `plugins` 的背单词请求把单词本插件列成 `pack-<插件 id>` 词书；相对路径被拒绝；不带时看不到它。
 #[test]
 fn vocabulary_boundary_lists_wordbook_packs_from_the_plugins_directory() {
@@ -16665,6 +17064,56 @@ fn telemetry_abi_runs_a_session_through_a_crash_and_clears_when_turned_off() {
     assert_eq!(unknown["ok"], false);
 }
 
+/// iOS App 事后收到的 MetricKit 诊断：带 `pid` 时记到该进程未结束的会话名下且只记一次，`outside_session` 只报 `crash`。
+#[test]
+fn telemetry_abi_attributes_a_diagnosed_crash_to_the_session_of_its_process() {
+    use crate::ffi::reporting::*;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("telemetry");
+    let begin =
+        json!({"directory": directory, "platform": "ios", "version": "0.52.0", "enabled": true});
+    let started = reporting_call(msime_client_telemetry_begin, begin.clone());
+    let session = started["value"]["session_id"].as_str().unwrap().to_owned();
+    let record = std::path::PathBuf::from(started["value"]["crash_record_path"].as_str().unwrap());
+    let diagnosed = |extra: Value| {
+        let mut request = json!({"directory": directory, "message": "Crash exception 10 code 0 signal 6", "stack": "0 MSIMEKeyboardExtension + 1"});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        reporting_call(msime_client_telemetry_record_crash, request)
+    };
+    let pid = std::process::id();
+    assert_eq!(diagnosed(json!({"pid": pid}))["value"], true);
+    assert!(record.is_file());
+    assert_eq!(diagnosed(json!({"pid": pid}))["value"], false);
+    assert_eq!(diagnosed(json!({"outside_session": true}))["value"], true);
+    assert_eq!(
+        diagnosed(json!({"pid": pid, "session": session}))["ok"],
+        false
+    );
+    assert_eq!(
+        diagnosed(json!({"pid": pid, "outside_session": true}))["ok"],
+        false
+    );
+    assert_eq!(diagnosed(json!({"outside_session": false}))["value"], false);
+
+    let next = reporting_call(msime_client_telemetry_begin, begin);
+    assert_eq!(next["value"]["previous_session_crashed"], true);
+    assert_eq!(next["value"]["crashes"], 2);
+    // 崩溃已经报过，同一进程再送来的诊断不再记。
+    assert_eq!(diagnosed(json!({"pid": pid}))["value"], false);
+    let store = msime_client_services::telemetry::TelemetryStore::new(&directory);
+    let session_crashes: Vec<_> = store
+        .queued()
+        .unwrap()
+        .into_iter()
+        .filter(|event| serde_json::to_value(event.kind).unwrap() == json!("session_crash"))
+        .map(|event| event.id)
+        .collect();
+    assert_eq!(session_crashes, [format!("session-{session}")]);
+}
+
 #[test]
 fn telemetry_abi_reads_consent_from_the_shared_preferences() {
     use crate::ffi::reporting::*;
@@ -17262,6 +17711,11 @@ fn a_downloaded_japanese_pack_keeps_temporary_japanese_available() {
     let mut preferences = Preferences::default();
     preferences.local_modes.temporary_japanese = true;
     preferences.mixed_input.japanese = true;
+    preferences.multilingual_input.enabled = true;
+    preferences.multilingual_input.languages = vec![
+        MultilingualLanguage::Chinese,
+        MultilingualLanguage::Japanese,
+    ];
     let options = || {
         let document = json!({ "api_version": 1, "resources": resources, "user_data": "/u", "cache": "/c", "dictionaries": "/d", "preferences": preferences, "preferences_directory": state });
         serde_json::from_value::<HostOptions>(document)
@@ -17274,6 +17728,7 @@ fn a_downloaded_japanese_pack_keeps_temporary_japanese_available() {
     assert_eq!(without.japanese_dictionary, "");
     assert!(!without.local_temporary_japanese);
     assert!(!without.mixed_japanese);
+    assert!(without.multilingual_languages.is_empty());
 
     // 只在暂存目录里：仍然不算。
     let staging = resource_packs::root(&state)
@@ -17300,6 +17755,13 @@ fn a_downloaded_japanese_pack_keeps_temporary_japanese_available() {
     );
     assert!(with.local_temporary_japanese);
     assert!(with.mixed_japanese);
+    assert_eq!(
+        with.multilingual_languages,
+        vec![
+            msime_engine::multilingual::Language::Chinese,
+            msime_engine::multilingual::Language::Japanese,
+        ]
+    );
 
     // 资源目录内置的那份照旧可用，字段为空时 Engine 读它。
     std::fs::remove_dir_all(resource_packs::root(&state)).unwrap();
@@ -17308,6 +17770,7 @@ fn a_downloaded_japanese_pack_keeps_temporary_japanese_available() {
     assert_eq!(bundled.japanese_dictionary, "");
     assert!(bundled.local_temporary_japanese);
     assert!(bundled.mixed_japanese);
+    assert_eq!(bundled.multilingual_languages, with.multilingual_languages);
 }
 
 #[test]
@@ -17705,7 +18168,13 @@ fn a_resource_pack_installed_after_the_session_opened_is_picked_up_on_focus() {
         dictionaries.join("msime-pinyin.db"),
     )
     .unwrap();
-    let options = json!({ "api_version": 1, "resources": resources, "user_data": path("user"), "cache": path("cache"), "dictionaries": dictionaries, "preferences": chinese_preferences(), "preferences_directory": state }).to_string();
+    let mut preferences = chinese_preferences();
+    preferences.multilingual_input.enabled = true;
+    preferences.multilingual_input.languages = vec![
+        MultilingualLanguage::Chinese,
+        MultilingualLanguage::Japanese,
+    ];
+    let options = json!({ "api_version": 1, "resources": resources, "user_data": path("user"), "cache": path("cache"), "dictionaries": dictionaries, "preferences": preferences, "preferences_directory": state }).to_string();
     let created = read(unsafe { msime_client_create(options.as_ptr(), options.len()) });
     assert_eq!(created["ok"], true, "{created}");
     let handle = created["value"]["session"].as_u64().unwrap();
@@ -17725,6 +18194,12 @@ fn a_resource_pack_installed_after_the_session_opened_is_picked_up_on_focus() {
     assert_eq!(before, LanguageDictionaries::default());
     assert_eq!(japanese, "");
     assert!(!pending);
+    SESSIONS.with(|sessions| {
+        assert!(sessions.borrow()[&handle]
+            .options
+            .multilingual_languages
+            .is_empty())
+    });
 
     let language = publish_resource_pack(
         &state,
@@ -17758,6 +18233,15 @@ fn a_resource_pack_installed_after_the_session_opened_is_picked_up_on_focus() {
         japanese.join("msime-japanese.dat").to_str().unwrap()
     );
     assert!(!pending, "an idle session rebuilds at once");
+    SESSIONS.with(|sessions| {
+        assert_eq!(
+            sessions.borrow()[&handle].options.multilingual_languages,
+            vec![
+                msime_engine::multilingual::Language::Chinese,
+                msime_engine::multilingual::Language::Japanese
+            ]
+        )
+    });
 
     // 没有变化时不再标记重建。
     SESSIONS.with(|sessions| {
@@ -19293,6 +19777,67 @@ fn mobile_voice_status_export_uses_shared_status_rules() {
     assert_eq!(
         result["value"]["status"],
         "没有可用的系统识别服务，可改用本地模型或豆包"
+    );
+}
+
+#[test]
+fn mobile_voice_polish_status_export_uses_shared_status_rules() {
+    for (enabled, configured, has_token, expected) in [
+        (false, false, false, serde_json::Value::Null),
+        (true, true, true, serde_json::Value::Null),
+        (
+            true,
+            false,
+            false,
+            serde_json::json!("未填写 API Key，识别结果不会润色"),
+        ),
+        (
+            true,
+            false,
+            true,
+            serde_json::json!("配置不完整，识别结果不会润色"),
+        ),
+    ] {
+        let result = read(msime_client_mobile_voice_polish_status(
+            enabled, configured, has_token,
+        ));
+        assert_eq!(
+            result,
+            serde_json::json!({"ok":true,"value":{"status":expected}})
+        );
+    }
+}
+
+#[test]
+fn mobile_voice_policy_export_uses_shared_provider_rules() {
+    let provider = "openai";
+    let mode = " legacy ";
+    let result = read(unsafe {
+        msime_client_mobile_voice_policy(
+            provider.as_ptr(),
+            provider.len(),
+            mode.as_ptr(),
+            mode.len(),
+        )
+    });
+    assert_eq!(
+        result,
+        serde_json::json!({"ok":true,"value":{"network":true,"legacy_auth":true}})
+    );
+
+    let provider = "local";
+    let mode = "api_key";
+    let result = read(unsafe {
+        msime_client_mobile_voice_policy(
+            provider.as_ptr(),
+            provider.len(),
+            mode.as_ptr(),
+            mode.len(),
+        )
+    });
+    assert_eq!(
+        result,
+        serde_json::json!({"ok":true,"value":{"network":false,"legacy_auth":false}})
     );
 }
 

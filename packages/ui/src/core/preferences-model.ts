@@ -33,6 +33,7 @@ import type {
 } from "../settings/candidate-paging-preferences";
 import type { SentenceAssociationPreferences } from "../settings/sentence-association-preferences";
 import type { MixedInputPreferences } from "../settings/mixed-input-preferences";
+import type { MultilingualInputPreferences } from "../settings/multilingual-input-section";
 import type { FrequencyPreferences } from "../settings/frequency-preferences";
 import type { AiAssistantPreferences } from "../settings/ai-assistant-preferences";
 import type { LocalModePreferences } from "../settings/local-mode-preferences";
@@ -90,6 +91,7 @@ export type Preferences = PunctuationPreferences &
     usage_reporting?: boolean;
     floating_toolbar?: FloatingToolbarPreferences;
     mixed_input?: MixedInputPreferences;
+    multilingual_input?: MultilingualInputPreferences;
     fuzzy_pinyin?: FuzzyPinyinPreferences;
     frequency?: FrequencyPreferences;
     word_character?: WordCharacterPreferences;
@@ -102,13 +104,14 @@ export type Preferences = PunctuationPreferences &
     navigation?: NavigationPreferences;
     keybindings?: KeybindingPreferences;
     scheme: InputScheme;
-    /** 触屏键盘的布局；`fourteen_key` 是全拼 14 键，`nine_key_shuangpin` 是九键双拼，都只配全拼。 */
+    /** 触屏键盘的布局；14 键和 18 键都是全拼组码键面，九键双拼也只配全拼。 */
     touch_keyboard_layout?:
       | "twenty_six_key"
       | "nine_key"
       | "handwriting"
       | "fourteen_key"
-      | "nine_key_shuangpin";
+      | "nine_key_shuangpin"
+      | "eighteen_key";
     /** Android 双拼的 26 / 14 / 18 键、iOS 双拼的 26 / 14 键选择；缺省为 26 键，与全拼布局独立保存。 */
     touch_shuangpin_layout?: "twenty_six_key" | "fourteen_key" | "eighteen_key";
     touch_keyboard_schemes?: TouchKeyboardSchemePreferences;

@@ -53,6 +53,7 @@ import { VocabularyAction, VocabularyReviewRequest } from '../keyboard/settings/
 import { LocalVoiceModelAction, LocalVoiceModelPolicy } from '../keyboard/settings/LocalVoiceModelPolicy';
 import { HTTP_ASR_CHAT_AUDIO, HttpAsrConfigurationPolicy } from '../keyboard/input/HttpAsrConfigurationPolicy';
 import { AiAuthenticationPolicy } from '../keyboard/settings/AiAuthenticationPolicy';
+import { CredentialStatusPolicy } from '../keyboard/settings/CredentialStatusPolicy';
 import { AiEndpoint } from '../keyboard/settings/AiEndpoint';
 import {
   CustomTranslationProbeDescriptor,
@@ -942,6 +943,7 @@ class SettingsBridge {
       `${context.filesDir}/engine.ready`);
     // Here as well as in the keyboard, so the page offers Cantonese, Zhuyin and Stroke (see hostCapabilities) before the keyboard has ever run.
     StagedResources.stageLanguageDictionaries(context.resourceDir, context.filesDir);
+    StagedResources.stageHandwriting(context.resourceDir, context.filesDir);
   }
 
 
@@ -1923,17 +1925,17 @@ class SettingsBridge {
     return client.dictionaryManifest(`${this.context.filesDir}/engine`);
   }
 
-  /** Read only an image declared by a validated external skin manifest. */
+  /** Read only an image declared by a validated external skin manifest, as base64: the default `bytes` array costs the shared layer a JSON value per byte, about 512 MiB at the 8 MiB resource limit. The page side turns it back into bytes. */
   readSkinImage(id: string, relative: string): string {
     return client.skinResource(JSON.stringify({
-      directory: `${this.stateDirectory}/skins`, id: id, relative: relative, kind: 'image'
+      directory: `${this.stateDirectory}/skins`, id: id, relative: relative, kind: 'image', encoding: 'base64'
     }));
   }
 
-  /** Read only a font declared by a validated external skin manifest. */
+  /** Read only a font declared by a validated external skin manifest, as base64 for the same reason as `readSkinImage`. */
   readSkinFont(id: string, relative: string): string {
     return client.skinResource(JSON.stringify({
-      directory: `${this.stateDirectory}/skins`, id: id, relative: relative, kind: 'font'
+      directory: `${this.stateDirectory}/skins`, id: id, relative: relative, kind: 'font', encoding: 'base64'
     }));
   }
 
@@ -2693,13 +2695,8 @@ class SettingsBridge {
       if (response.responseCode >= 200 && response.responseCode < 300) {
         return this.credentialReply(true, '连接成功，API Key 和模型配置有效。');
       }
-      if (response.responseCode === 401 || response.responseCode === 403) {
-        return this.credentialReply(false, '认证失败，请检查 API Key 和访问权限。');
-      }
-      if (response.responseCode === 429) {
-        return this.credentialReply(false, '服务限流或额度不足，请稍后重试。');
-      }
-      return this.credentialReply(false, '服务拒绝请求，请检查接口地址和模型配置。');
+      return this.credentialReply(false,
+        CredentialStatusPolicy.rejected(response.responseCode, '服务拒绝请求，请检查接口地址和模型配置'));
     } catch (error) {
       KeyboardLog.error(`chat credential unavailable: ${describeError(error)}`);
       return this.credentialReply(false, '连接失败，请检查接口地址、模型、API Key 和网络。');
@@ -2740,13 +2737,8 @@ class SettingsBridge {
       if (response.responseCode >= 200 && response.responseCode < 300) {
         return this.credentialReply(true, '连接成功，API Key 和模型配置有效。');
       }
-      if (response.responseCode === 401 || response.responseCode === 403) {
-        return this.credentialReply(false, '认证失败，请检查 API Key 和访问权限。');
-      }
-      if (response.responseCode === 429) {
-        return this.credentialReply(false, '服务限流或额度不足，请稍后重试。');
-      }
-      return this.credentialReply(false, '转写测试未成功，请检查接口地址、模型和服务配置。');
+      return this.credentialReply(false,
+        CredentialStatusPolicy.rejected(response.responseCode, '转写测试未成功，请检查接口地址、模型和服务配置'));
     } catch (error) {
       KeyboardLog.error(`ASR credential unavailable: ${describeError(error)}`);
       return this.credentialReply(false, '连接失败，请检查转写接口、模型、API Key 和网络。');

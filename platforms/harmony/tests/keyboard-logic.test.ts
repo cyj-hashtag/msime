@@ -74,6 +74,7 @@ import {
   PreferenceMapping,
 } from "../entry/src/main/ets/keyboard/KeyboardScheme";
 import { FourteenKeyLayout } from "../entry/src/main/ets/keyboard/input/FourteenKeyLayout";
+import { EighteenKeyLayout } from "../entry/src/main/ets/keyboard/input/EighteenKeyLayout";
 import { AppEdition } from "../entry/src/main/ets/keyboard/AppEdition";
 import { ReplyKeyboardPolicy } from "../entry/src/main/ets/keyboard/ReplyKeyboardPolicy";
 import { ReplyContextPolicy } from "../entry/src/main/ets/keyboard/ReplyContextPolicy";
@@ -570,6 +571,11 @@ group("maps Harmony commits to shared typing-statistics sources", () => {
     "全拼 14 键记在 fourteenKey 名下，英文时仍记英文",
   );
   check(
+    TypingStatisticsPolicy.source("quanpin", "xiaohe", false, KeyGrid.EIGHTEEN_KEY, "none") ===
+      "eighteenKey",
+    "全拼 18 键记在 eighteenKey 名下",
+  );
+  check(
     TypingStatisticsPolicy.source("shuangpin", "microsoft", false, KeyGrid.NONE, "none") ===
       "microsoft",
     "shuangpin profile is retained",
@@ -993,6 +999,7 @@ group("keeps translation provider policy bounded and credential-free in signatur
       TranslationPolicy.sourceGetsNoGloss(7) &&
       TranslationPolicy.sourceGetsNoGloss(13) &&
       TranslationPolicy.sourceGetsNoGloss(14) &&
+      TranslationPolicy.sourceGetsNoGloss(18) &&
       !TranslationPolicy.sourceGetsNoGloss(0),
     "special candidate sources never receive glosses",
   );
@@ -1603,6 +1610,11 @@ group("bounds handwriting points and rejects empty recognition requests", () => 
   check(
     point.x === HANDWRITING_CANVAS_SIZE && point.y === 0,
     "handwriting points stay inside the canvas",
+  );
+  const widePoint = HandwritingStrokePolicy.pointInCanvas(600, 300, 700, 420);
+  check(
+    widePoint.x === 600 && widePoint.y === 300,
+    "wide handwriting areas retain points outside the fixed recognition canvas",
   );
   check(!HandwritingStrokePolicy.canRecognize([]), "empty ink does not trigger OCR");
   check(
@@ -2319,7 +2331,7 @@ group("enabled schemes keep the fixed order and never resolve to nothing", () =>
   );
   check(
     KeyboardScheme.enabledFromPreferenceIds(null) === KeyboardScheme.DEFAULT_ENABLED &&
-      KeyboardScheme.DEFAULT_ENABLED.length === KeyboardScheme.SCHEMES.length - 7,
+      KeyboardScheme.DEFAULT_ENABLED.length === KeyboardScheme.SCHEMES.length - 8,
     "a null list means every scheme but the six the user turns on",
   );
 });
@@ -2896,7 +2908,7 @@ group("全拼 14 键的键表与引擎的组码表是同一张", () => {
 group("全拼 14 键是追加在最后的一张卡，只给全拼，默认不启用", () => {
   const fourteen: SchemeDefinition = KeyboardScheme.QUANPIN_FOURTEEN_KEY;
   check(
-    KeyboardScheme.SCHEMES[17] === fourteen && KeyboardScheme.SCHEMES.length === 18,
+    KeyboardScheme.SCHEMES[17] === fourteen && KeyboardScheme.SCHEMES.length === 19,
     "按 append-only 排在笔画之后",
   );
   check(
@@ -2985,8 +2997,9 @@ group("14 键的网格与键面", () => {
     KeyGrid.NONE === 0 &&
       KeyGrid.NINE_KEY === 1 &&
       KeyGrid.FOURTEEN_KEY === 2 &&
-      KeyGrid.NINE_KEY_SHUANGPIN === 3,
-    "取值与 msime_client_set_key_grid 的 0、1、2、3 相同",
+      KeyGrid.NINE_KEY_SHUANGPIN === 3 &&
+      KeyGrid.EIGHTEEN_KEY === 4,
+    "取值与 msime_client_set_key_grid 的 0、1、2、3、4 相同",
   );
   check(KeyboardScheme.usesFourteenKeyFace(true, false, "none"), "14 键布局画 14 键键面");
   check(
@@ -3001,6 +3014,37 @@ group("14 键的网格与键面", () => {
   check(
     NineKeyPanelPolicy.threeColumn(true, SchemeTraits.QUANPIN, true),
     "14 键组字时展开候选也是九键的三栏面板",
+  );
+});
+
+group("全拼 18 键使用共享组码并覆盖全部字母", () => {
+  const rows = EighteenKeyLayout.rows();
+  const keys = rows.flat();
+  check(rows.map((row) => row.length).join(",") === "7,6,5", "18 键三排为 7、6、5 个键");
+  check(keys.length === 18, "18 键一共 18 个组");
+  check(
+    keys.map((key) => key.input).join(" ") === "q w r y u i p a s f h j l z x v b m",
+    "组码使用每组首字母",
+  );
+  const letters = keys
+    .flatMap((key) => key.letters.split(""))
+    .sort()
+    .join("");
+  check(letters === "abcdefghijklmnopqrstuvwxyz", "18 个组恰好覆盖 26 个字母");
+  for (const key of keys) {
+    check(
+      KeyIdPolicy.eighteenKey(key.letters) === `Eighteen${key.label}`,
+      `${key.label} 记在 18 键键位`,
+    );
+  }
+  check(EighteenKeyLayout.holdOptions(keys[1]).join(",") === "w,e", "双字母键长按弹出字母");
+  check(EighteenKeyLayout.holdOptions(keys[0]).length === 0, "单字母键不弹出长按选项");
+  check(
+    KeyboardScheme.fromPreferences("quanpin", null, "eighteen_key") ===
+      KeyboardScheme.QUANPIN_EIGHTEEN_KEY &&
+      KeyboardScheme.keyGrid("eighteen_key", "quanpin", false) === KeyGrid.EIGHTEEN_KEY &&
+      KeyboardScheme.keyGrid("eighteen_key", "quanpin", true) === KeyGrid.NONE,
+    "18 键方案、网格编号和 2in1 回落一致",
   );
 });
 
@@ -4127,13 +4171,26 @@ group("resolves external candidate skin tokens without trusting missing fields",
     "the toolbar block is exposed only for a drawn package",
   );
   check(
-    CandidateSkinCatalogPolicy.imageDataUrl("image/png", [0, 1, 2]) ===
-      "data:image/png;base64,AAEC",
-    "image bytes become an image-only data URL",
+    CandidateSkinCatalogPolicy.imageDataUrl("image/png", "AAEC") === "data:image/png;base64,AAEC",
+    "base64 image bytes become an image-only data URL",
   );
   check(
-    CandidateSkinCatalogPolicy.imageDataUrl("text/css", [0, 1, 2]) === null,
+    CandidateSkinCatalogPolicy.imageDataUrl("text/css", "AAEC") === null,
     "non-image resources cannot become decoration URLs",
+  );
+  check(
+    CandidateSkinCatalogPolicy.imageDataUrl("image/png", "") === null &&
+      CandidateSkinCatalogPolicy.imageDataUrl("image/png", "AAE") === null &&
+      CandidateSkinCatalogPolicy.imageDataUrl("image/png", 'AA");x') === null,
+    "empty or malformed base64 cannot become a decoration URL",
+  );
+  check(
+    CandidateSkinCatalogPolicy.base64ByteLength("AAEC") === 3 &&
+      CandidateSkinCatalogPolicy.base64ByteLength("AAE=") === 2 &&
+      CandidateSkinCatalogPolicy.base64ByteLength("AA==") === 1 &&
+      CandidateSkinCatalogPolicy.base64ByteLength("") === 0 &&
+      CandidateSkinCatalogPolicy.base64ByteLength("A=AA") === -1,
+    "the canvas budget counts decoded bytes from the base64 length",
   );
   check(
     CandidateSkinCatalogPolicy.imageAspectRatio(
@@ -5911,6 +5968,18 @@ group("traditional output never loses text when conversion fails", () => {
   check(
     ChineseOutputPolicy.output("发展", true, true, phrase) === "發展",
     "发展 converts as a phrase",
+  );
+  check(
+    ChineseOutputPolicy.candidateOutput("hello網絡学校", true, true, 18, (text) =>
+      text.replace("学", "學"),
+    ) === "hello網絡学校",
+    "混合候选保留日文汉字",
+  );
+  check(
+    ChineseOutputPolicy.candidateOutput("学校", true, true, 0, (text) =>
+      text.replace("学", "學"),
+    ) === "學校",
+    "普通中文照常转换",
   );
   check(ChineseOutputPolicy.applies(false, 0, "none") === true, "quanpin converts");
   check(ChineseOutputPolicy.applies(true, 0, "none") === false, "dedicated English does not");
@@ -13099,7 +13168,7 @@ group("Korean draws the syllable, not the key letters behind it", () => {
 
 group("the Korean scheme is one more card, and remembers the Chinese scheme it replaced", () => {
   check(
-    KeyboardScheme.SCHEMES[11] === KeyboardScheme.KOREAN && KeyboardScheme.SCHEMES.length === 18,
+    KeyboardScheme.SCHEMES[11] === KeyboardScheme.KOREAN && KeyboardScheme.SCHEMES.length === 19,
     "appended after the first ten, as the shared seventeen-entry picker has it",
   );
   check(
@@ -14889,6 +14958,48 @@ group("key sounds follow the desktop player's settings and pack rules", () => {
     "50 is half amplitude, as on the desktop",
   );
   check(KeySoundPolicy.gain({ ...on, volume: 0 }) === 0, "0 is silent");
+  const touch: KeySoundSettings = KeySoundPolicy.touchSettings(undefined, true);
+  check(
+    touch.key && touch.pack === "default" && KeySoundPolicy.selection(touch).pack === "default",
+    "a touch keyboard with its local switch on loads the built-in default pack without any plugins record",
+  );
+  check(
+    !KeySoundPolicy.wanted(KeySoundPolicy.touchSettings({ key_sound: { enabled: true } }, false)),
+    "the touch switch, not the 2in1 plugin switch, decides whether touch keys sound",
+  );
+  const touchPicked: KeySoundSettings = KeySoundPolicy.touchSettings(
+    {
+      key_sound: { enabled: false, mode: "melody", pack: "msime-bubble", volume: 80 },
+      commit_sound: { enabled: true },
+      achievements: { enabled: true },
+      combo_counter: true,
+      combo_tier_sound: true,
+    },
+    true,
+  );
+  check(
+    touchPicked.key &&
+      touchPicked.pack === "msime-bubble" &&
+      touchPicked.volume === 80 &&
+      !touchPicked.melody &&
+      !touchPicked.commit &&
+      !touchPicked.achievements &&
+      !touchPicked.tierSound,
+    "touch keys take the shared pack and volume but none of the 2in1 plugin effects",
+  );
+  check(
+    KeySoundPolicy.touchKeyClass("Space", false) === KeySoundClass.SPACE &&
+      KeySoundPolicy.touchKeyClass("Enter", false) === KeySoundClass.ENTER &&
+      KeySoundPolicy.touchKeyClass("Backspace", false) === KeySoundClass.BACKSPACE &&
+      KeySoundPolicy.touchKeyClass("KeyA", false) === KeySoundClass.DEFAULT &&
+      KeySoundPolicy.touchKeyClass(null, false) === KeySoundClass.DEFAULT,
+    "touch keys sound by their key id",
+  );
+  check(
+    KeySoundPolicy.touchKeyClass("Space", true) === KeySoundClass.DEFAULT &&
+      KeySoundPolicy.touchKeyClass("Backspace", true) === KeySoundClass.DEFAULT,
+    "a password field sounds every touch key alike",
+  );
   check(!KeySoundPolicy.keysSilent(false, false, false), "Chinese mode sounds its keys");
   check(KeySoundPolicy.keysSilent(true, false, false), "a password field is silent");
   check(KeySoundPolicy.keysSilent(false, true, false), "English mode is silent, as on the desktop");
@@ -15588,7 +15699,7 @@ group(
   "Cantonese, Zhuyin and Vietnamese are three more cards, Cantonese and Zhuyin needing a dictionary",
   () => {
     check(
-      KeyboardScheme.SCHEMES.length === 18 &&
+      KeyboardScheme.SCHEMES.length === 19 &&
         KeyboardScheme.SCHEMES[11] === KeyboardScheme.KOREAN &&
         KeyboardScheme.SCHEMES[12] === KeyboardScheme.CANTONESE &&
         KeyboardScheme.SCHEMES[13] === KeyboardScheme.ZHUYIN &&
@@ -15760,7 +15871,7 @@ group("the Dachen keys wear their bopomofo and send their ASCII key", () => {
 
 group("Stroke is one more card, opt-in and needing msime-stroke.db", () => {
   check(
-    KeyboardScheme.SCHEMES.length === 18 &&
+    KeyboardScheme.SCHEMES.length === 19 &&
       KeyboardScheme.SCHEMES[15] === KeyboardScheme.TIBETAN &&
       KeyboardScheme.SCHEMES[16] === KeyboardScheme.STROKE,
     "appended after Tibetan, as the shared TouchKeyboardScheme::ALL appends it",

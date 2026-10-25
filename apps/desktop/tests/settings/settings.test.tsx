@@ -388,11 +388,11 @@ test("Android touch schemes follow Apple order and stay absent on hosts without 
     within(group)
       .getAllByRole("button")
       .map((button) => button.textContent?.replace("✓", "")),
-  ).toEqual([...touchSchemeLabels, "全拼 14 键", "九键双拼"]);
+  ).toEqual([...touchSchemeLabels, "全拼 14 键", "九键双拼", "全拼 18 键"]);
   // 高情商回复是键盘工具栏上的工具，不是输入方案。
   expect(within(group).queryByText("高情商回复")).toBeNull();
-  expect(within(group).getAllByRole("switch")).toHaveLength(13);
-  // 全拼 14 键与九键双拼追加在原有列表后，默认不启用。
+  expect(within(group).getAllByRole("switch")).toHaveLength(14);
+  // 全拼 14 键、九键双拼与全拼 18 键追加在原有列表后，默认不启用。
   expect(
     (screen.getByRole("switch", { name: "显示输入方案 全拼 14 键" }) as HTMLInputElement).checked,
   ).toBe(false);
@@ -442,8 +442,9 @@ test("touch hosts offering Cantonese, Zhuyin, Vietnamese, Tibetan and Stroke lis
     "注音 9 键",
     "全拼 14 键",
     "九键双拼",
+    "全拼 18 键",
   ]);
-  expect(within(group).getAllByRole("switch")).toHaveLength(19);
+  expect(within(group).getAllByRole("switch")).toHaveLength(20);
   for (const label of [
     "粤拼 26 键",
     "大千注音",
@@ -4079,8 +4080,8 @@ test("mobile hosts use Apple-style primary navigation and retain secondary setti
     within(primary)
       .getAllByRole("button")
       .map((button) => button.textContent),
-  ).toEqual(["设置", "社区", "统计", "我的"]);
-  // 标签栏只有这四项。其余页面都是「设置」标签根页上的一行，皮肤页也在其中；已有标签页的「社区」和二级页「AI 对话」不在其中。
+  ).toEqual(["首页", "社区", "统计", "我的"]);
+  // 标签栏只有这四项。其余页面都是「首页」标签根页上的一行，皮肤页也在其中；已有标签页的「社区」和二级页「AI 对话」不在其中。
   const home = screen.getByRole("region", { name: "首页" });
   const secondaryLabels = [...home.querySelectorAll("[data-row-title]")].map(
     (row) => row.textContent ?? "",
@@ -4663,7 +4664,7 @@ test("mobile account deep links participate in the back stack", async () => {
     // The tab and the sidebar entry share the page's title, so reach for the one in the bar.
     const bar = screen.getByRole("navigation", { name: "主要功能" });
     fireEvent.click(within(bar).getByRole("button", { name: "我的" }));
-    // 触屏宿主上反馈和关于在「我的」里，「设置」列表不再重复列出。
+    // 触屏宿主上反馈和关于在「我的」里，「首页」列表不再重复列出。
     expect(screen.queryByRole("button", { name: "帮助与反馈" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: /^(关于|关于水杉)$/ }));
     expect(window.history.state).toEqual(
